@@ -22,63 +22,73 @@ struct NewTaskSheet: View {
           dismiss()
         } label: {
           Image(systemName: "xmark")
-        }.buttonStyle(.plain)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("关闭交办任务")
       }
       .padding(20)
       .background(CMColor.warmPaper)
       .overlay(alignment: .bottom) { Rectangle().fill(CMColor.hairline).frame(height: 0.5) }
 
-      VStack(alignment: .leading, spacing: 18) {
-        field("项目目录", symbol: "folder") {
-          HStack {
-            TextField("选择一个代码项目", text: $draft.cwd)
-              .textFieldStyle(.roundedBorder)
-            Button("选择…") { chooseDirectory() }
-          }
-        }
-
-        field("任务目标", symbol: "text.bubble") {
-          TextEditor(text: $draft.prompt)
-            .font(CMFont.body(13))
-            .frame(minHeight: 130)
-            .padding(8)
-            .background(CMColor.porcelain, in: RoundedRectangle(cornerRadius: 7))
-            .overlay(RoundedRectangle(cornerRadius: 7).stroke(CMColor.hairline, lineWidth: 0.7))
-        }
-
-        field("模型", symbol: "cpu") {
-          Picker(
-            "模型",
-            selection: Binding(
-              get: { draft.model ?? "" },
-              set: { draft.model = $0.isEmpty ? nil : $0 }
-            )
-          ) {
-            Text("Codex 默认模型").tag("")
-            ForEach(model.models) { option in
-              Text(option.displayName + (option.isDefault ? " · 默认" : "")).tag(option.id)
+      ScrollView {
+        VStack(alignment: .leading, spacing: 18) {
+          field("项目目录", symbol: "folder") {
+            HStack {
+              TextField("选择一个代码项目", text: $draft.cwd)
+                .textFieldStyle(.roundedBorder)
+                .accessibilityLabel("项目目录")
+              Button("选择…") { chooseDirectory() }
             }
           }
-          .labelsHidden()
-          .frame(maxWidth: 320, alignment: .leading)
-        }
 
-        HStack(alignment: .top, spacing: 9) {
-          Image(systemName: "shield.lefthalf.filled").foregroundStyle(CMColor.reportGreen)
-          Text("任务使用 workspace-write 沙箱和 on-request 审批。任何越出当前权限的操作都会让职员举手，不会自动批准。")
-            .font(CMFont.body(11))
-            .foregroundStyle(CMColor.muted)
-        }
-        .padding(12)
-        .background(CMColor.reportGreen.opacity(0.06), in: RoundedRectangle(cornerRadius: 7))
+          field("任务目标", symbol: "text.bubble") {
+            TextEditor(text: $draft.prompt)
+              .font(CMFont.body(13))
+              .frame(minHeight: 130)
+              .padding(8)
+              .background(CMColor.porcelain, in: RoundedRectangle(cornerRadius: 7))
+              .overlay(RoundedRectangle(cornerRadius: 7).stroke(CMColor.hairline, lineWidth: 0.7))
+              .accessibilityLabel("任务目标")
+          }
 
-        if let submissionError {
-          Text(submissionError).font(CMFont.body(11)).foregroundStyle(CMColor.raiseRed)
+          field("模型", symbol: "cpu") {
+            Picker(
+              "模型",
+              selection: Binding(
+                get: { draft.model ?? "" },
+                set: { draft.model = $0.isEmpty ? nil : $0 }
+              )
+            ) {
+              Text("Codex 默认模型").tag("")
+              ForEach(model.models) { option in
+                Text(option.displayName + (option.isDefault ? " · 默认" : "")).tag(option.id)
+              }
+            }
+            .labelsHidden()
+            .frame(maxWidth: 320, alignment: .leading)
+          }
+
+          HStack(alignment: .top, spacing: 9) {
+            Image(systemName: "shield.lefthalf.filled").foregroundStyle(CMColor.reportGreen)
+            Text("任务使用 workspace-write 沙箱和 on-request 审批。任何越出当前权限的操作都会让职员举手，不会自动批准。")
+              .font(CMFont.body(11))
+              .foregroundStyle(CMColor.muted)
+              .fixedSize(horizontal: false, vertical: true)
+          }
+          .padding(12)
+          .background(CMColor.reportGreen.opacity(0.06), in: RoundedRectangle(cornerRadius: 7))
+          .accessibilityElement(children: .combine)
+
+          if let submissionError {
+            Text(submissionError)
+              .font(CMFont.body(11))
+              .foregroundStyle(CMColor.raiseRed)
+              .fixedSize(horizontal: false, vertical: true)
+              .accessibilityLabel("错误：\(submissionError)")
+          }
         }
+        .padding(20)
       }
-      .padding(20)
-
-      Spacer(minLength: 0)
 
       HStack {
         Spacer()
@@ -98,7 +108,7 @@ struct NewTaskSheet: View {
       .background(CMColor.warmPaper)
       .overlay(alignment: .top) { Rectangle().fill(CMColor.hairline).frame(height: 0.5) }
     }
-    .frame(width: 620, height: 610)
+    .frame(minWidth: 520, idealWidth: 620, minHeight: 480, idealHeight: 610)
     .background(CMColor.warmPaper)
   }
 

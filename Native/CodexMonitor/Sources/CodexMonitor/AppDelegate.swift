@@ -48,7 +48,7 @@ extension AppDelegate: UNUserNotificationCenterDelegate {
     let threadID = response.notification.request.content.userInfo["threadID"] as? String
     await MainActor.run { [weak self] in
       if let threadID {
-        self?.model?.selectedProjectID = nil
+        self?.model?.selectProject(id: nil)
         self?.model?.filter = .all
         self?.model?.selectTask(threadID: threadID)
       }

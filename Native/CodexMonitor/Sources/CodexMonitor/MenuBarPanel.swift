@@ -57,9 +57,12 @@ struct MenuBarPanel: View {
                   .foregroundStyle(task.displayStatus.color)
                   .frame(width: 24)
                 VStack(alignment: .leading, spacing: 2) {
-                  Text("\(StaffIdentity.name(for: task.id)) · \(task.projectName)")
-                    .font(CMFont.body(11, weight: .semibold))
-                    .lineLimit(1)
+                  Text(
+                    "\(StaffIdentity.name(for: task.id)) · \(model.preferences.displayProjectName(for: task))"
+                  )
+                  .font(CMFont.body(11, weight: .semibold))
+                  .lineLimit(1)
+                  .truncationMode(.middle)
                   Text(task.displayStatus.title)
                     .font(CMFont.mono(9))
                     .foregroundStyle(CMColor.muted)
@@ -72,7 +75,32 @@ struct MenuBarPanel: View {
               .padding(.vertical, 9)
             }
             .buttonStyle(.plain)
+            .accessibilityLabel(
+              "\(StaffIdentity.name(for: task.id))，\(model.preferences.displayProjectName(for: task))，\(task.displayStatus.title)"
+            )
             Divider().padding(.leading, 48)
+          }
+          if model.attentionTasks.count > 5 {
+            Button {
+              model.filter = .attention
+              openMainWindow()
+            } label: {
+              HStack {
+                Text("另有 \(model.attentionTasks.count - 5) 项需要处理")
+                Spacer()
+                Text("查看全部")
+                  .fontWeight(.semibold)
+                Image(systemName: "arrow.right")
+                  .font(.system(size: 10, weight: .semibold))
+              }
+              .font(CMFont.body(11))
+              .foregroundStyle(CMColor.ink)
+              .padding(.horizontal, 14)
+              .padding(.vertical, 10)
+              .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("另有 \(model.attentionTasks.count - 5) 项需要处理，查看全部")
           }
         }
         .background(CMColor.porcelain)
@@ -85,6 +113,8 @@ struct MenuBarPanel: View {
           NSApplication.shared.terminate(nil)
         } label: {
           Image(systemName: "power")
+            .frame(width: 28, height: 28)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .help("退出 Codex Monitor")
@@ -95,8 +125,12 @@ struct MenuBarPanel: View {
           openMainWindow()
         } label: {
           Image(systemName: "slider.horizontal.3")
+            .frame(width: 28, height: 28)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .help("设置")
+        .accessibilityLabel("打开设置")
       }
       .font(CMFont.body(11, weight: .semibold))
       .padding(14)

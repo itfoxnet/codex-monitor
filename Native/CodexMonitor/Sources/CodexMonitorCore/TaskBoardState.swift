@@ -3,33 +3,37 @@ import Foundation
 
 public struct TaskBoardState: Equatable, Sendable {
   public private(set) var tasksByID: [String: TaskRecord]
+  public private(set) var revision: UInt64
+  private var projection: TaskBoardProjection
 
   public init(tasksByID: [String: TaskRecord] = [:]) {
     self.tasksByID = tasksByID
+    revision = 0
+    projection = TaskBoardProjection(tasksByID: tasksByID)
   }
 
-  public var tasks: [TaskRecord] { Array(tasksByID.values) }
+  public var tasks: [TaskRecord] { projection.tasks }
 
-  public var projects: [ProjectRecord] {
-    Dictionary(grouping: tasks, by: \.projectID)
-      .map { id, tasks in
-        let first = tasks[0]
-        return ProjectRecord(
-          id: id,
-          name: first.projectName,
-          cwd: first.cwd,
-          tasks: tasks.sorted(by: Self.taskSort)
-        )
-      }
-      .sorted { lhs, rhs in
-        if lhs.attentionCount != rhs.attentionCount {
-          return lhs.attentionCount > rhs.attentionCount
-        }
-        return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
-      }
+  public var metrics: TaskMetrics { projection.metrics }
+
+  public func tasks(projectID: String?) -> [TaskRecord] {
+    guard let projectID else { return projection.tasks }
+    return projection.tasksByProjectID[projectID] ?? []
   }
+
+  public func metrics(projectID: String?) -> TaskMetrics {
+    guard let projectID else { return projection.metrics }
+    return projection.metricsByProjectID[projectID] ?? TaskMetrics(tasks: [])
+  }
+
+  public func filteredTasks(in scope: TaskQueryScope) -> [TaskRecord] {
+    tasks(projectID: scope.projectID).filter(scope.matches)
+  }
+
+  public var projects: [ProjectRecord] { projection.projects }
 
   public mutating func mergeThreads(_ threads: [JSONValue], managedIDs: Set<String>) {
+    let previousTasksByID = tasksByID
     var seen = Set<String>()
     for thread in threads {
       guard var incoming = Self.task(from: thread, managedIDs: managedIDs) else { continue }
@@ -57,6 +61,7 @@ public struct TaskBoardState: Equatable, Sendable {
     for (id, task) in tasksByID where !seen.contains(id) && task.ownership == .historyOnly {
       tasksByID.removeValue(forKey: id)
     }
+    if tasksByID != previousTasksByID { rebuildProjection() }
   }
 
   /// Adds threads found by a lightweight background discovery pass without treating the
@@ -75,6 +80,7 @@ public struct TaskBoardState: Equatable, Sendable {
       tasksByID[incoming.id] = incoming
       inserted.insert(incoming.id)
     }
+    if !inserted.isEmpty { rebuildProjection() }
     return inserted
   }
 
@@ -85,7 +91,9 @@ public struct TaskBoardState: Equatable, Sendable {
       incoming.lastSummary = existing.lastSummary
       incoming.activeTurnID = existing.activeTurnID
     }
+    guard tasksByID[incoming.id] != incoming else { return }
     tasksByID[incoming.id] = incoming
+    rebuildProjection()
   }
 
   public mutating func markManaged(threadID: String) {
@@ -94,6 +102,7 @@ public struct TaskBoardState: Equatable, Sendable {
     if task.displayStatus == .historyOnly { task.displayStatus = .waiting }
     task.updatedAt = .now
     tasksByID[threadID] = task
+    rebuildProjection()
   }
 
   public mutating func applyExternalSessionSnapshots(
@@ -103,71 +112,76 @@ public struct TaskBoardState: Equatable, Sendable {
     activeFreshness: TimeInterval = 10 * 60,
     incidentFreshness: TimeInterval = 2 * 60 * 60
   ) {
+    var changed = false
     for (threadID, snapshot) in snapshots {
-      updateTask(threadID) { task in
-        guard task.ownership == .historyOnly else { return }
-        let wasRunning = task.displayStatus == .running && task.rawStatus == "externalActive"
-        let age = max(0, now.timeIntervalSince(snapshot.updatedAt))
-        let isFreshActivity = age <= activeFreshness
-        let isFreshIncident = age <= incidentFreshness
-        switch snapshot.lifecycle {
-        case .active:
-          if isFreshActivity {
-            task.displayStatus = .running
-            task.rawStatus = "externalActive"
-          } else {
+      changed =
+        updateTask(threadID) { task in
+          guard task.ownership == .historyOnly else { return }
+          let wasRunning = task.displayStatus == .running && task.rawStatus == "externalActive"
+          let age = max(0, now.timeIntervalSince(snapshot.updatedAt))
+          let isFreshActivity = age <= activeFreshness
+          let isFreshIncident = age <= incidentFreshness
+          switch snapshot.lifecycle {
+          case .active:
+            if isFreshActivity {
+              task.displayStatus = .running
+              task.rawStatus = "externalActive"
+            } else {
+              task.displayStatus = .historyOnly
+              task.rawStatus = "notLoaded"
+            }
+          case .completed:
+            task.rawStatus = "externalCompleted"
+            if wasRunning || (newlyDiscoveredThreadIDs.contains(threadID) && isFreshActivity) {
+              task.displayStatus = .completedUnseen
+            } else if ![.completedUnseen, .completedSeen].contains(task.displayStatus) {
+              task.displayStatus = .historyOnly
+              task.rawStatus = "notLoaded"
+            }
+          case .failed:
+            if wasRunning || isFreshIncident {
+              task.displayStatus = .failed
+              task.rawStatus = "externalFailed"
+            } else {
+              task.displayStatus = .historyOnly
+              task.rawStatus = "notLoaded"
+            }
+          case .interrupted:
+            if wasRunning || isFreshActivity {
+              task.displayStatus = .interrupted
+              task.rawStatus = "externalInterrupted"
+            } else {
+              task.displayStatus = .historyOnly
+              task.rawStatus = "notLoaded"
+            }
+          case .unknown:
             task.displayStatus = .historyOnly
             task.rawStatus = "notLoaded"
           }
-        case .completed:
-          task.rawStatus = "externalCompleted"
-          if wasRunning || (newlyDiscoveredThreadIDs.contains(threadID) && isFreshActivity) {
-            task.displayStatus = .completedUnseen
-          } else if ![.completedUnseen, .completedSeen].contains(task.displayStatus) {
-            task.displayStatus = .historyOnly
-            task.rawStatus = "notLoaded"
-          }
-        case .failed:
-          if wasRunning || isFreshIncident {
-            task.displayStatus = .failed
-            task.rawStatus = "externalFailed"
-          } else {
-            task.displayStatus = .historyOnly
-            task.rawStatus = "notLoaded"
-          }
-        case .interrupted:
-          if wasRunning || isFreshActivity {
-            task.displayStatus = .interrupted
-            task.rawStatus = "externalInterrupted"
-          } else {
-            task.displayStatus = .historyOnly
-            task.rawStatus = "notLoaded"
-          }
-        case .unknown:
-          task.displayStatus = .historyOnly
-          task.rawStatus = "notLoaded"
-        }
-        task.updatedAt = max(task.updatedAt, snapshot.updatedAt)
-      }
+          task.updatedAt = max(task.updatedAt, snapshot.updatedAt)
+        } || changed
     }
+    if changed { rebuildProjection() }
   }
 
   public mutating func applyNotification(method: String, params: JSONValue) {
+    var changed = false
     switch method {
     case "thread/started":
       if let thread = params["thread"] {
         let managedIDs = Set(tasks.filter { $0.ownership == .hostedLive }.map(\.id))
         upsertThread(thread, managedIDs: managedIDs)
       }
+      return
     case "thread/status/changed":
       guard let threadID = params["threadId"]?.stringValue,
         let status = params["status"]
       else { return }
-      updateStatus(threadID: threadID, status: status)
+      changed = updateStatus(threadID: threadID, status: status)
     case "turn/started":
       guard let threadID = params["threadId"]?.stringValue else { return }
       let turnID = params["turn"]?["id"]?.stringValue
-      updateTask(threadID) { task in
+      changed = updateTask(threadID) { task in
         task.activeTurnID = turnID
         task.rawStatus = "active"
         task.displayStatus =
@@ -178,7 +192,7 @@ public struct TaskBoardState: Equatable, Sendable {
       guard let threadID = params["threadId"]?.stringValue else { return }
       let status = params["turn"]?["status"]?.stringValue ?? "unknown"
       let completedTurnID = params["turn"]?["id"]?.stringValue
-      updateTask(threadID) { task in
+      changed = updateTask(threadID) { task in
         if let activeTurnID = task.activeTurnID,
           let completedTurnID,
           activeTurnID != completedTurnID
@@ -205,7 +219,7 @@ public struct TaskBoardState: Equatable, Sendable {
         let item = params["item"]
       else { return }
       if item["type"]?.stringValue == "agentMessage", let text = item["text"]?.stringValue {
-        updateTask(threadID) { task in
+        changed = updateTask(threadID) { task in
           task.lastSummary = String(text.prefix(2_000))
           task.updatedAt = .now
         }
@@ -215,7 +229,7 @@ public struct TaskBoardState: Equatable, Sendable {
         let requestValue = params["requestId"],
         let requestID = try? RPCID(jsonValue: requestValue)
       else { return }
-      updateTask(threadID) { task in
+      changed = updateTask(threadID) { task in
         task.attentions = task.attentions.map { attention in
           var copy = attention
           if copy.rpcID == requestID { copy.state = .resolved }
@@ -229,7 +243,7 @@ public struct TaskBoardState: Equatable, Sendable {
       }
     case "error":
       if let threadID = params["threadId"]?.stringValue {
-        updateTask(threadID) { task in
+        changed = updateTask(threadID) { task in
           task.displayStatus = .failed
           task.rawStatus = "error"
           task.updatedAt = .now
@@ -238,6 +252,7 @@ public struct TaskBoardState: Equatable, Sendable {
     default:
       break
     }
+    if changed { rebuildProjection() }
   }
 
   @discardableResult
@@ -277,6 +292,7 @@ public struct TaskBoardState: Equatable, Sendable {
       task.rawStatus = "waitingOnApproval"
       task.updatedAt = .now
     }
+    rebuildProjection()
     return request
   }
 
@@ -289,43 +305,51 @@ public struct TaskBoardState: Equatable, Sendable {
     task.attentions[index].state = .responding
     task.updatedAt = .now
     tasksByID[task.id] = task
+    rebuildProjection()
     return true
   }
 
   public mutating func expireOpenRequests(olderThanGeneration generation: UInt64) {
+    var changed = false
     for id in tasksByID.keys {
-      updateTask(id) { task in
-        task.attentions = task.attentions.map { attention in
-          var copy = attention
-          if copy.generation < generation && (copy.state == .open || copy.state == .responding) {
-            copy.state = .expired
+      changed =
+        updateTask(id) { task in
+          task.attentions = task.attentions.map { attention in
+            var copy = attention
+            if copy.generation < generation && (copy.state == .open || copy.state == .responding) {
+              copy.state = .expired
+            }
+            return copy
           }
-          return copy
-        }
-        if task.displayStatus == .needsApproval || task.displayStatus == .needsInput {
-          task.displayStatus = .unknown
-        }
-      }
+          if task.displayStatus == .needsApproval || task.displayStatus == .needsInput {
+            task.displayStatus = .unknown
+          }
+        } || changed
     }
+    if changed { rebuildProjection() }
   }
 
   public mutating func markCompletedSeen(threadID: String) {
-    updateTask(threadID) { task in
+    let changed = updateTask(threadID) { task in
       if task.displayStatus == .completedUnseen { task.displayStatus = .completedSeen }
     }
+    if changed { rebuildProjection() }
   }
 
   public mutating func restoreCompletedUnseen(threadID: String) {
-    updateTask(threadID) { task in
+    let changed = updateTask(threadID) { task in
       if task.displayStatus == .completedSeen { task.displayStatus = .completedUnseen }
     }
+    if changed { rebuildProjection() }
   }
 
   public mutating func restoreCachedTasks(_ tasks: [TaskRecord]) {
+    let previousTasksByID = tasksByID
     for task in tasks { tasksByID[task.id] = task }
+    if tasksByID != previousTasksByID { rebuildProjection() }
   }
 
-  private mutating func updateStatus(threadID: String, status: JSONValue) {
+  private mutating func updateStatus(threadID: String, status: JSONValue) -> Bool {
     updateTask(threadID) { task in
       let raw = status["type"]?.stringValue ?? "unknown"
       task.rawStatus = raw
@@ -354,10 +378,22 @@ public struct TaskBoardState: Equatable, Sendable {
     }
   }
 
-  private mutating func updateTask(_ id: String, _ body: (inout TaskRecord) -> Void) {
-    guard var task = tasksByID[id] else { return }
+  @discardableResult
+  private mutating func updateTask(
+    _ id: String,
+    _ body: (inout TaskRecord) -> Void
+  ) -> Bool {
+    guard var task = tasksByID[id] else { return false }
+    let previous = task
     body(&task)
+    guard task != previous else { return false }
     tasksByID[id] = task
+    return true
+  }
+
+  private mutating func rebuildProjection() {
+    revision &+= 1
+    projection = TaskBoardProjection(tasksByID: tasksByID)
   }
 
   private static func task(from thread: JSONValue, managedIDs: Set<String>) -> TaskRecord? {
@@ -446,12 +482,39 @@ public struct TaskBoardState: Equatable, Sendable {
     )
   }
 
-  private static func taskSort(_ lhs: TaskRecord, _ rhs: TaskRecord) -> Bool {
+  fileprivate static func taskSort(_ lhs: TaskRecord, _ rhs: TaskRecord) -> Bool {
     if lhs.displayStatus.attentionPriority != rhs.displayStatus.attentionPriority {
       return lhs.displayStatus.attentionPriority < rhs.displayStatus.attentionPriority
     }
     if lhs.updatedAt != rhs.updatedAt { return lhs.updatedAt > rhs.updatedAt }
     return lhs.id.localizedStandardCompare(rhs.id) == .orderedAscending
+  }
+}
+
+private struct TaskBoardProjection: Equatable, Sendable {
+  let tasks: [TaskRecord]
+  let projects: [ProjectRecord]
+  let tasksByProjectID: [String: [TaskRecord]]
+  let metrics: TaskMetrics
+  let metricsByProjectID: [String: TaskMetrics]
+
+  init(tasksByID: [String: TaskRecord]) {
+    tasks = tasksByID.values.sorted(by: TaskBoardState.taskSort)
+    let grouped = Dictionary(grouping: tasks, by: \.projectID)
+    tasksByProjectID = grouped
+    metrics = TaskMetrics(tasks: tasks)
+    metricsByProjectID = grouped.mapValues { TaskMetrics(tasks: $0) }
+    projects = grouped.map { id, projectTasks in
+      let first = projectTasks[0]
+      return ProjectRecord(
+        id: id,
+        name: first.projectName,
+        cwd: first.cwd,
+        tasks: projectTasks
+      )
+    }.sorted { lhs, rhs in
+      return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+    }
   }
 }
 

@@ -11,14 +11,16 @@ struct TaskDetailView: View {
           VStack(alignment: .leading, spacing: 18) {
             identity(task)
             statusSection(task)
-            if task.ownership == .historyOnly {
+            if task.isExternallyObserved {
+              ObservedSessionPanel()
+            } else if task.ownership == .historyOnly {
               TakeOverPanel(task: task)
             } else {
               ForEach(task.openAttentions) { request in
                 ApprovalPanel(request: request)
               }
             }
-            if let summary = task.lastSummary, !summary.isEmpty {
+            if let summary = model.preferences.displaySummary(for: task), !summary.isEmpty {
               section("最近汇报", symbol: "text.alignleft") {
                 Text(summary)
                   .font(CMFont.body(12))
@@ -31,6 +33,8 @@ struct TaskDetailView: View {
           .padding(20)
         }
         .background(CMColor.warmPaper.opacity(0.6))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("任务详情")
       } else {
         ContentUnavailableView("选择一名职员", systemImage: "person.crop.rectangle")
       }
@@ -39,44 +43,69 @@ struct TaskDetailView: View {
 
   private func identity(_ task: TaskRecord) -> some View {
     VStack(alignment: .leading, spacing: 12) {
-      HStack(alignment: .top, spacing: 12) {
-        Image(systemName: task.displayStatus.symbol)
-          .font(.system(size: 19, weight: .semibold))
-          .foregroundStyle(task.displayStatus.color)
-          .frame(width: 44, height: 44)
-          .background(task.displayStatus.color.opacity(0.08), in: Circle())
-          .overlay(Circle().stroke(task.displayStatus.color.opacity(0.3), lineWidth: 1))
-        VStack(alignment: .leading, spacing: 3) {
-          Text(StaffIdentity.name(for: task.id))
-            .font(CMFont.display(20, weight: .bold))
-          Text(
-            "工号 \(StaffIdentity.shortID(for: task.id)) · 柜台 \(StaffIdentity.deskNumber(for: task.id))"
-          )
-          .font(CMFont.mono(10))
-          .foregroundStyle(CMColor.muted)
+      ViewThatFits(in: .horizontal) {
+        identityRow(task)
+        VStack(alignment: .leading, spacing: 10) {
+          identityCore(task)
+          StatusPill(status: task.displayStatus)
         }
-        Spacer()
-        StatusPill(status: task.displayStatus)
       }
-      Text(task.title)
+      Text(model.preferences.displayTitle(for: task))
         .font(CMFont.body(14, weight: .semibold))
         .foregroundStyle(CMColor.ink)
         .textSelection(.enabled)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel(
+      "\(StaffIdentity.name(for: task.id))，工号 \(StaffIdentity.shortID(for: task.id))，\(task.displayStatus.title)，\(model.preferences.displayTitle(for: task))"
+    )
+  }
+
+  private func identityRow(_ task: TaskRecord) -> some View {
+    HStack(alignment: .top, spacing: 12) {
+      identityCore(task)
+      Spacer(minLength: 8)
+      StatusPill(status: task.displayStatus)
+    }
+  }
+
+  private func identityCore(_ task: TaskRecord) -> some View {
+    HStack(alignment: .top, spacing: 12) {
+      Image(systemName: task.displayStatus.symbol)
+        .font(.system(size: 19, weight: .semibold))
+        .foregroundStyle(task.displayStatus.color)
+        .frame(width: 44, height: 44)
+        .background(task.displayStatus.color.opacity(0.08), in: Circle())
+        .overlay(Circle().stroke(task.displayStatus.color.opacity(0.3), lineWidth: 1))
+      VStack(alignment: .leading, spacing: 3) {
+        Text(StaffIdentity.name(for: task.id))
+          .font(CMFont.display(20, weight: .bold))
+        Text(
+          "工号 \(StaffIdentity.shortID(for: task.id)) · 柜台 \(StaffIdentity.deskNumber(for: task.id))"
+        )
+        .font(CMFont.mono(10))
+        .foregroundStyle(CMColor.muted)
+      }
     }
   }
 
   private func statusSection(_ task: TaskRecord) -> some View {
     section("工作单", symbol: "doc.text") {
-      detailRow("项目", value: task.projectName)
-      detailRow(
-        "来源",
-        value: task.ownership == .hostedLive
-          ? "工作台 App Server" : task.isExternallyObserved ? "其他 Codex 客户端（本机观察）" : "其他 Codex 客户端档案"
-      )
-      detailRow("原始状态", value: task.rawStatus)
-      if let branch = task.branch { detailRow("分支", value: branch) }
-      detailRow("更新时间", value: task.updatedAt.formatted(date: .abbreviated, time: .standard))
-      detailRow("Thread", value: task.id)
+      Grid(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 8) {
+        detailRow("项目", value: model.preferences.displayProjectName(for: task))
+        detailRow(
+          "来源",
+          value: task.ownership == .hostedLive
+            ? "工作台 App Server" : task.isExternallyObserved ? "其他 Codex 客户端（本机观察）" : "其他 Codex 客户端档案"
+        )
+        detailRow("原始状态", value: task.rawStatus)
+        if let branch = model.preferences.displayBranch(for: task) {
+          detailRow("分支", value: branch)
+        }
+        detailRow("更新时间", value: task.updatedAt.formatted(date: .abbreviated, time: .standard))
+        detailRow("Thread", value: task.id)
+      }
     }
   }
 
@@ -126,12 +155,19 @@ struct TaskDetailView: View {
   }
 
   private func detailRow(_ label: String, value: String) -> some View {
-    HStack(alignment: .firstTextBaseline) {
-      Text(label).foregroundStyle(CMColor.muted).frame(width: 70, alignment: .leading)
-      Text(value).foregroundStyle(CMColor.ink).textSelection(.enabled)
-      Spacer(minLength: 0)
+    GridRow(alignment: .firstTextBaseline) {
+      Text(label)
+        .foregroundStyle(CMColor.muted)
+        .frame(width: 70, alignment: .leading)
+      Text(value)
+        .foregroundStyle(CMColor.ink)
+        .textSelection(.enabled)
+        .fixedSize(horizontal: false, vertical: true)
+        .layoutPriority(1)
     }
     .font(CMFont.mono(10))
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel("\(label)，\(value)")
   }
 }
 
@@ -153,7 +189,10 @@ private struct ApprovalPanel: View {
       }
 
       if let reason = request.reason, !reason.isEmpty {
-        Text(reason).font(CMFont.body(12)).foregroundStyle(CMColor.ink)
+        Text(model.preferences.privacyMode ? "请求原因已隐藏" : reason)
+          .font(CMFont.body(12))
+          .foregroundStyle(CMColor.ink)
+          .fixedSize(horizontal: false, vertical: true)
       }
 
       if request.kind == .userInput {
@@ -164,7 +203,7 @@ private struct ApprovalPanel: View {
         {
           DisclosureGroup(isExpanded: $revealSensitive) {
             VStack(alignment: .leading, spacing: 7) {
-              if let command = request.command {
+              if !model.preferences.privacyMode, let command = request.command {
                 Text(command)
                   .font(CMFont.mono(10))
                   .textSelection(.enabled)
@@ -172,12 +211,12 @@ private struct ApprovalPanel: View {
                   .frame(maxWidth: .infinity, alignment: .leading)
                   .background(CMColor.ink.opacity(0.05), in: RoundedRectangle(cornerRadius: 5))
               }
-              if let cwd = request.workingDirectory {
+              if !model.preferences.privacyMode, let cwd = request.workingDirectory {
                 Label(cwd, systemImage: "folder")
                   .font(CMFont.mono(9))
                   .textSelection(.enabled)
               }
-              if let permissions = request.requestedPermissions {
+              if !model.preferences.privacyMode, let permissions = request.requestedPermissions {
                 Text(permissions.rendered(maxLength: 500))
                   .font(CMFont.mono(9))
                   .textSelection(.enabled)
@@ -185,8 +224,10 @@ private struct ApprovalPanel: View {
             }
             .padding(.top, 6)
           } label: {
-            Text("查看操作范围").font(CMFont.body(11, weight: .medium))
+            Text(model.preferences.privacyMode ? "操作范围已隐藏" : "查看操作范围")
+              .font(CMFont.body(11, weight: .medium))
           }
+          .disabled(model.preferences.privacyMode)
         }
 
         HStack(spacing: 8) {
@@ -235,16 +276,31 @@ private struct UserInputApprovalView: View {
             Picker(
               question.header,
               selection: Binding(
-                get: { selections[question.id] ?? question.options.first?.label ?? "" },
+                get: { selections[question.id] ?? "" },
                 set: { selections[question.id] = $0 }
               )
             ) {
+              Text("请选择…").tag("")
               ForEach(question.options) { option in
-                Text(option.label).tag(option.label)
+                VStack(alignment: .leading, spacing: 2) {
+                  Text(option.label)
+                  if !option.description.isEmpty {
+                    Text(option.description)
+                      .font(CMFont.body(11))
+                      .foregroundStyle(CMColor.muted)
+                      .fixedSize(horizontal: false, vertical: true)
+                  }
+                }
+                .tag(option.label)
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel(
+                  option.description.isEmpty
+                    ? option.label : "\(option.label)，\(option.description)"
+                )
               }
               if question.allowsOther { Text("其他…").tag(otherSelection) }
             }
-            .labelsHidden()
+            .pickerStyle(.radioGroup)
             if question.allowsOther && selections[question.id] == otherSelection {
               answerField(for: question)
             }
@@ -257,7 +313,7 @@ private struct UserInputApprovalView: View {
       Button("提交回答") {
         let mapped = Dictionary(
           uniqueKeysWithValues: request.questions.map { question in
-            let selection = selections[question.id] ?? question.options.first?.label
+            let selection = selections[question.id]
             let value =
               selection == otherSelection
               ? answers[question.id] ?? "" : selection ?? answers[question.id] ?? ""
@@ -289,7 +345,7 @@ private struct UserInputApprovalView: View {
       if question.options.isEmpty {
         return !(answers[question.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
       }
-      let selection = selections[question.id] ?? question.options.first?.label ?? ""
+      let selection = selections[question.id] ?? ""
       if selection == otherSelection {
         return !(answers[question.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
       }
@@ -299,35 +355,47 @@ private struct UserInputApprovalView: View {
 }
 
 private struct TakeOverPanel: View {
+  private enum FocusTarget: Hashable {
+    case prompt
+    case submit
+  }
+
   @Environment(AppModel.self) private var model
   let task: TaskRecord
-  @State private var prompt = "继续这个任务，并先确认当前仓库状态。"
+  @State private var prompt: String
+  @FocusState private var focusTarget: FocusTarget?
+
+  init(task: TaskRecord) {
+    self.task = task
+    _prompt = State(initialValue: "继续这个任务，并先确认当前仓库状态。")
+  }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
-      Label(
-        task.isExternallyObserved ? "正在观察其他 Codex 客户端" : "这是一份历史档案",
-        systemImage: task.isExternallyObserved ? "eye" : "archivebox"
-      )
-      .font(CMFont.body(13, weight: .bold))
-      Text(
-        task.isExternallyObserved
-          ? "办理、完成、中止和失败状态来自本机会话日志；授权申请仍需回到原 Codex 客户端处理。"
-          : "只有接管后的新一轮工作由本工作台实时管理。请避免同时在其他 Codex 客户端继续同一任务。"
-      )
-      .font(CMFont.body(11))
-      .foregroundStyle(CMColor.muted)
+      Label("这是一份历史档案", systemImage: "archivebox")
+        .font(CMFont.body(13, weight: .bold))
+      Text("只有接管后的新一轮工作由本工作台实时管理。请避免同时在其他 Codex 客户端继续同一任务。")
+        .font(CMFont.body(11))
+        .foregroundStyle(CMColor.muted)
+        .fixedSize(horizontal: false, vertical: true)
       TextEditor(text: $prompt)
         .font(CMFont.body(12))
-        .frame(minHeight: 70)
+        .frame(minHeight: 90)
         .padding(6)
         .background(CMColor.porcelain, in: RoundedRectangle(cornerRadius: 6))
         .overlay(RoundedRectangle(cornerRadius: 6).stroke(CMColor.hairline, lineWidth: 0.7))
+        .accessibilityLabel("接管任务说明")
+        .focused($focusTarget, equals: .prompt)
+        .onKeyPress(.tab) {
+          focusTarget = .submit
+          return .handled
+        }
       Button("接管并继续") {
         Task { _ = await model.takeOver(task, prompt: prompt) }
       }
       .buttonStyle(.borderedProminent)
       .tint(CMColor.ink)
+      .focused($focusTarget, equals: .submit)
       .disabled(
         model.isBusy || !model.canManageTasks
           || prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -335,6 +403,28 @@ private struct TakeOverPanel: View {
     .padding(14)
     .background(CMColor.workOrange.opacity(0.06), in: RoundedRectangle(cornerRadius: 9))
     .overlay(
-      RoundedRectangle(cornerRadius: 9).stroke(CMColor.workOrange.opacity(0.3), lineWidth: 1))
+      RoundedRectangle(cornerRadius: 9).stroke(CMColor.workOrange.opacity(0.3), lineWidth: 1)
+    )
+    .id(task.id)
+  }
+}
+
+private struct ObservedSessionPanel: View {
+  var body: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      Label("正在观察其他 Codex 客户端", systemImage: "eye")
+        .font(CMFont.body(13, weight: .bold))
+      Text("办理、完成、中止和失败状态来自本机会话日志；授权申请仍需回到原 Codex 客户端处理。")
+        .font(CMFont.body(11))
+        .foregroundStyle(CMColor.muted)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+    .padding(14)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .background(CMColor.workOrange.opacity(0.06), in: RoundedRectangle(cornerRadius: 9))
+    .overlay(
+      RoundedRectangle(cornerRadius: 9).stroke(CMColor.workOrange.opacity(0.3), lineWidth: 1)
+    )
+    .accessibilityElement(children: .combine)
   }
 }

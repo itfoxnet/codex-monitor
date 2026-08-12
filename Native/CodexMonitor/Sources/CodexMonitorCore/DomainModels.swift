@@ -1,6 +1,28 @@
 import CodexMonitorProtocol
 import Foundation
 
+public enum TaskFilter: String, CaseIterable, Identifiable, Sendable {
+  case all
+  case attention
+  case running
+  case completed
+  case waiting
+  case history
+
+  public var id: String { rawValue }
+
+  public var title: String {
+    switch self {
+    case .all: "全部会话"
+    case .attention: "举手"
+    case .running: "办理中"
+    case .completed: "已完成"
+    case .waiting: "等待中"
+    case .history: "历史档案"
+    }
+  }
+}
+
 public enum ConnectionPhase: String, Codable, Sendable {
   case disconnected
   case detecting
@@ -285,6 +307,100 @@ public struct TaskRecord: Codable, Equatable, Sendable, Identifiable {
   public var isExternallyObserved: Bool {
     ownership == .historyOnly && rawStatus.hasPrefix("external")
   }
+
+  public var isExternalActive: Bool {
+    ownership == .historyOnly && rawStatus == "externalActive"
+  }
+}
+
+public struct TaskMetrics: Equatable, Sendable {
+  public private(set) var total = 0
+  public private(set) var running = 0
+  public private(set) var approval = 0
+  public private(set) var attention = 0
+  public private(set) var completedUnread = 0
+  public private(set) var unknown = 0
+  public private(set) var history = 0
+
+  public init<S: Sequence>(tasks: S) where S.Element == TaskRecord {
+    for task in tasks { record(task) }
+  }
+
+  mutating func record(_ task: TaskRecord) {
+    total += 1
+    if task.displayStatus == .running { running += 1 }
+    if task.displayStatus == .needsApproval || task.displayStatus == .needsInput {
+      approval += 1
+    }
+    if task.displayStatus.needsManager { attention += 1 }
+    if task.displayStatus == .completedUnseen { completedUnread += 1 }
+    if task.displayStatus == .unknown { unknown += 1 }
+    if task.displayStatus == .historyOnly { history += 1 }
+  }
+}
+
+public struct TaskQueryScope: Equatable, Hashable, Sendable {
+  public let projectID: String?
+  public let filter: TaskFilter
+  public let query: String
+  public let hidesSensitiveContent: Bool
+
+  public init(
+    projectID: String?,
+    filter: TaskFilter,
+    query: String,
+    hidesSensitiveContent: Bool = false
+  ) {
+    self.projectID = projectID
+    self.filter = filter
+    self.query = query.trimmingCharacters(in: .whitespacesAndNewlines)
+    self.hidesSensitiveContent = hidesSensitiveContent
+  }
+
+  public func matches(_ task: TaskRecord) -> Bool {
+    if let projectID, task.projectID != projectID { return false }
+    switch filter {
+    case .all:
+      break
+    case .attention where !task.displayStatus.needsManager:
+      return false
+    case .running where task.displayStatus != .running:
+      return false
+    case .completed where ![.completedUnseen, .completedSeen].contains(task.displayStatus):
+      return false
+    case .waiting where ![.waiting, .interrupted, .unknown].contains(task.displayStatus):
+      return false
+    case .history where task.displayStatus != .historyOnly:
+      return false
+    default:
+      break
+    }
+
+    guard !query.isEmpty else { return true }
+    var searchableValues = [
+      task.id,
+      task.sessionID,
+      task.displayStatus.title,
+      StaffIdentity.name(for: task.id),
+      StaffIdentity.shortID(for: task.id),
+    ]
+    if !hidesSensitiveContent {
+      searchableValues.append(contentsOf: [task.title, task.projectName, task.branch ?? ""])
+    }
+    return searchableValues.contains { $0.localizedCaseInsensitiveContains(query) }
+  }
+}
+
+public enum TaskSelectionPolicy {
+  public static func retainedTaskID(
+    afterSelecting projectID: String?,
+    currentTaskID: String?,
+    tasksByID: [String: TaskRecord]
+  ) -> String? {
+    guard let currentTaskID, let task = tasksByID[currentTaskID] else { return nil }
+    guard let projectID else { return currentTaskID }
+    return task.projectID == projectID ? currentTaskID : nil
+  }
 }
 
 public struct ProjectRecord: Equatable, Sendable, Identifiable {
@@ -292,16 +408,18 @@ public struct ProjectRecord: Equatable, Sendable, Identifiable {
   public let name: String
   public let cwd: String
   public let tasks: [TaskRecord]
+  public let metrics: TaskMetrics
 
   public init(id: String, name: String, cwd: String, tasks: [TaskRecord]) {
     self.id = id
     self.name = name
     self.cwd = cwd
     self.tasks = tasks
+    metrics = TaskMetrics(tasks: tasks)
   }
 
-  public var runningCount: Int { tasks.count { $0.displayStatus == .running } }
-  public var attentionCount: Int { tasks.count { $0.displayStatus.needsManager } }
+  public var runningCount: Int { metrics.running }
+  public var attentionCount: Int { metrics.attention }
   public var completedCount: Int {
     tasks.count { $0.displayStatus == .completedSeen || $0.displayStatus == .completedUnseen }
   }

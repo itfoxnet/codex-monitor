@@ -3,25 +3,47 @@ import SwiftUI
 
 struct DashboardView: View {
   @Environment(AppModel.self) private var model
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @FocusState private var searchFocused: Bool
 
   var body: some View {
     @Bindable var model = model
 
-    NavigationSplitView {
-      ProjectSidebar()
-        .navigationSplitViewColumnWidth(min: 190, ideal: 230, max: 270)
-    } detail: {
-      ZStack {
-        OperationsGridBackground()
-        VStack(spacing: 0) {
-          workspaceHeader
-          metricsStrip
-          filterBar
-          taskBoard
+    GeometryReader { geometry in
+      let usesCompactDetail = geometry.size.width < 1_180
+
+      NavigationSplitView {
+        ProjectSidebar()
+          .navigationSplitViewColumnWidth(min: 190, ideal: 230, max: 270)
+      } detail: {
+        if usesCompactDetail, model.selectedTaskID != nil {
+          compactTaskDetail
+            .navigationTitle("任务详情")
+        } else {
+          ZStack {
+            OperationsGridBackground()
+            VStack(spacing: 0) {
+              workspaceHeader
+              metricsStrip
+              filterBar
+              taskBoard
+            }
+          }
+          .navigationTitle("工作台")
         }
       }
-      .navigationTitle("工作台")
+      .navigationSplitViewStyle(.balanced)
+      .inspector(
+        isPresented: Binding(
+          get: { !usesCompactDetail && model.selectedTaskID != nil },
+          set: { presented in
+            if !presented, !usesCompactDetail { model.dismissTaskSelection() }
+          }
+        )
+      ) {
+        TaskDetailView()
+          .inspectorColumnWidth(min: 320, ideal: 380, max: 480)
+      }
       .toolbar {
         ToolbarItemGroup {
           Button {
@@ -45,45 +67,56 @@ struct DashboardView: View {
           }
         }
       }
-    }
-    .navigationSplitViewStyle(.balanced)
-    .inspector(
-      isPresented: Binding(
-        get: { model.selectedTaskID != nil },
-        set: { if !$0 { model.dismissTaskSelection() } }
-      )
-    ) {
-      TaskDetailView()
-        .inspectorColumnWidth(min: 320, ideal: 380, max: 480)
-    }
-    .sheet(isPresented: $model.isNewTaskPresented) { NewTaskSheet() }
-    .sheet(isPresented: $model.isSettingsPresented) { SettingsView() }
-    .overlay(alignment: .top) {
-      if let message = model.bannerMessage {
-        NoticeBanner(message: message, tone: .error) { model.bannerMessage = nil }
-          .padding(.top, 8)
-          .transition(.move(edge: .top).combined(with: .opacity))
-      } else if let message = model.protocolWarningMessage {
-        NoticeBanner(message: message, tone: .warning) { model.protocolWarningMessage = nil }
-          .padding(.top, 8)
-          .transition(.move(edge: .top).combined(with: .opacity))
+      .sheet(isPresented: $model.isNewTaskPresented) { NewTaskSheet() }
+      .sheet(isPresented: $model.isSettingsPresented) { SettingsView() }
+      .overlay(alignment: .top) {
+        if let message = model.bannerMessage {
+          NoticeBanner(message: message, tone: .error) { model.bannerMessage = nil }
+            .padding(.top, 8)
+            .transition(.move(edge: .top).combined(with: .opacity))
+        } else if let message = model.protocolWarningMessage {
+          NoticeBanner(message: message, tone: .warning) { model.protocolWarningMessage = nil }
+            .padding(.top, 8)
+            .transition(.move(edge: .top).combined(with: .opacity))
+        }
       }
-    }
-    .overlay(alignment: .bottom) {
-      if let acknowledgement = model.reportAcknowledgement {
-        UndoNotice(
-          message: acknowledgement.message,
-          undo: { withAnimation(.snappy) { model.undoLastReportAcknowledgement() } },
-          dismiss: { withAnimation(.snappy) { model.dismissReportAcknowledgement() } }
-        )
-        .padding(.bottom, 18)
-        .transition(.move(edge: .bottom).combined(with: .opacity))
+      .overlay(alignment: .bottom) {
+        if let acknowledgement = model.reportAcknowledgement {
+          UndoNotice(
+            message: acknowledgement.message,
+            undo: { withAnimation(.snappy) { model.undoLastReportAcknowledgement() } },
+            dismiss: { withAnimation(.snappy) { model.dismissReportAcknowledgement() } }
+          )
+          .padding(.bottom, 18)
+          .transition(.move(edge: .bottom).combined(with: .opacity))
+        }
       }
+      .animation(reduceMotion ? nil : .snappy, value: model.reportAcknowledgement)
+      .onChange(of: model.searchFocusRequest) { _, _ in searchFocused = true }
+      .onMoveCommand { model.moveSelection($0) }
     }
-    .animation(.snappy, value: model.reportAcknowledgement)
-    .onChange(of: model.searchFocusRequest) { _, _ in searchFocused = true }
-    .onMoveCommand { model.moveSelection($0) }
     .frame(minWidth: 900, minHeight: 600)
+  }
+
+  private var compactTaskDetail: some View {
+    VStack(spacing: 0) {
+      HStack {
+        Button {
+          model.dismissTaskSelection()
+        } label: {
+          Label("返回工作台", systemImage: "chevron.left")
+        }
+        .buttonStyle(.borderless)
+        .keyboardShortcut(.cancelAction)
+        Spacer()
+      }
+      .padding(.horizontal, 20)
+      .padding(.vertical, 10)
+      .background(CMColor.warmPaper)
+      .overlay(alignment: .bottom) { Rectangle().fill(CMColor.hairline).frame(height: 0.5) }
+
+      TaskDetailView()
+    }
   }
 
   private var workspaceHeader: some View {
@@ -94,8 +127,12 @@ struct DashboardView: View {
           .tracking(2)
           .foregroundStyle(CMColor.muted)
         Text(
-          model.selectedProjectID.flatMap { id in model.board.projects.first { $0.id == id }?.name }
-            ?? "全部项目"
+          model.selectedProjectID.flatMap { id in
+            guard !model.preferences.privacyMode else {
+              return "保密项目 · \(StaffIdentity.privateReference(for: id))"
+            }
+            return model.board.projects.first { $0.id == id }?.name
+          } ?? "全部项目"
         )
         .font(CMFont.display(27, weight: .bold))
         .foregroundStyle(CMColor.ink)
@@ -116,12 +153,27 @@ struct DashboardView: View {
   }
 
   private var metricsStrip: some View {
-    HStack(spacing: 0) {
-      metric("办理中", value: model.scopedRunningCount, color: CMColor.workOrange, index: "01")
-      metric("举手", value: model.scopedAttentionCount, color: CMColor.raiseRed, index: "02")
-      metric(
-        "完成未阅", value: model.scopedCompletedUnreadCount, color: CMColor.reportGreen, index: "03")
-      metric("历史档案", value: model.scopedHistoryCount, color: CMColor.muted, index: "04")
+    ViewThatFits(in: .horizontal) {
+      HStack(spacing: 0) {
+        metric("办理中", value: model.scopedRunningCount, color: CMColor.workOrange, index: "01")
+        metric("举手", value: model.scopedAttentionCount, color: CMColor.raiseRed, index: "02")
+        metric(
+          "完成未阅", value: model.scopedCompletedUnreadCount, color: CMColor.reportGreen,
+          index: "03")
+        metric("历史档案", value: model.scopedHistoryCount, color: CMColor.muted, index: "04")
+      }
+      VStack(spacing: 0) {
+        HStack(spacing: 0) {
+          metric("办理中", value: model.scopedRunningCount, color: CMColor.workOrange, index: "01")
+          metric("举手", value: model.scopedAttentionCount, color: CMColor.raiseRed, index: "02")
+        }
+        HStack(spacing: 0) {
+          metric(
+            "完成未阅", value: model.scopedCompletedUnreadCount, color: CMColor.reportGreen,
+            index: "03")
+          metric("历史档案", value: model.scopedHistoryCount, color: CMColor.muted, index: "04")
+        }
+      }
     }
     .background(CMColor.porcelain.opacity(0.88))
     .overlay(alignment: .bottom) { Rectangle().fill(CMColor.hairline).frame(height: 0.5) }
@@ -137,42 +189,74 @@ struct DashboardView: View {
     }
     .padding(.horizontal, 18)
     .padding(.vertical, 12)
-    .frame(maxWidth: .infinity)
+    .frame(minWidth: 130, maxWidth: .infinity)
     .overlay(alignment: .trailing) { Rectangle().fill(CMColor.hairline).frame(width: 0.5) }
   }
 
   private var filterBar: some View {
     @Bindable var model = model
-    return HStack(spacing: 12) {
-      Picker("状态", selection: $model.filter) {
-        ForEach(TaskFilter.allCases) { filter in Text(filter.title).tag(filter) }
+    return ViewThatFits(in: .horizontal) {
+      HStack(spacing: 12) {
+        statusPicker
+          .frame(minWidth: 480, maxWidth: 480)
+        Spacer(minLength: 8)
+        searchField
+          .frame(width: 280)
       }
-      .pickerStyle(.segmented)
-      .frame(maxWidth: 480)
-
-      Spacer()
-
-      HStack(spacing: 7) {
-        Image(systemName: "magnifyingglass").foregroundStyle(CMColor.muted)
-        TextField("搜索职员、任务、项目或工号", text: $model.searchText)
-          .textFieldStyle(.plain)
-          .font(CMFont.body(12))
-          .focused($searchFocused)
+      VStack(alignment: .leading, spacing: 8) {
+        statusPicker
+          .frame(maxWidth: .infinity)
+        searchField
+          .frame(maxWidth: .infinity)
       }
-      .padding(.horizontal, 10)
-      .padding(.vertical, 7)
-      .frame(width: 280)
-      .background(CMColor.porcelain, in: RoundedRectangle(cornerRadius: 7))
-      .overlay(RoundedRectangle(cornerRadius: 7).stroke(CMColor.hairline, lineWidth: 0.7))
     }
     .padding(.horizontal, 20)
     .padding(.vertical, 10)
     .background(CMColor.warmPaper.opacity(0.88))
   }
 
+  private var statusPicker: some View {
+    @Bindable var model = model
+    return Picker("状态", selection: $model.filter) {
+      ForEach(TaskFilter.allCases) { filter in Text(filter.title).tag(filter) }
+    }
+    .pickerStyle(.segmented)
+  }
+
+  private var searchField: some View {
+    @Bindable var model = model
+    return HStack(spacing: 7) {
+      Image(systemName: "magnifyingglass")
+        .foregroundStyle(CMColor.muted)
+        .accessibilityHidden(true)
+      TextField("搜索职员、任务、项目或工号", text: $model.searchText)
+        .textFieldStyle(.plain)
+        .font(CMFont.body(12))
+        .focused($searchFocused)
+      if !model.searchText.isEmpty {
+        Button {
+          model.searchText = ""
+        } label: {
+          Image(systemName: "xmark.circle.fill")
+            .frame(width: 22, height: 22)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(CMColor.muted)
+        .accessibilityLabel("清除搜索")
+      }
+    }
+    .padding(.leading, 10)
+    .padding(.trailing, 6)
+    .padding(.vertical, 7)
+    .background(CMColor.porcelain, in: RoundedRectangle(cornerRadius: 7))
+    .overlay(RoundedRectangle(cornerRadius: 7).stroke(CMColor.hairline, lineWidth: 0.7))
+  }
+
   private var taskBoard: some View {
-    ScrollView {
-      if model.filteredTasks.isEmpty {
+    let visibleTasks = model.filteredTasks
+    return ScrollView {
+      if visibleTasks.isEmpty {
         ContentUnavailableView {
           Label(emptyStateTitle, systemImage: "rectangle.3.group")
         } description: {
@@ -189,42 +273,22 @@ struct DashboardView: View {
         LazyVGrid(
           columns: [GridItem(.adaptive(minimum: 260, maximum: 360), spacing: 16)], spacing: 16
         ) {
-          ForEach(model.filteredTasks) { task in
-            ZStack(alignment: .bottomTrailing) {
-              Button {
+          ForEach(visibleTasks) { task in
+            TaskCardView(
+              task: task,
+              selected: model.selectedTaskID == task.id,
+              onSelect: {
                 model.selectTask(task)
-              } label: {
-                TaskCardView(task: task, selected: model.selectedTaskID == task.id)
-              }
-              .buttonStyle(.plain)
-              .simultaneousGesture(
-                TapGesture(count: 2).onEnded { model.openInCodex(task) }
-              )
-              .contextMenu {
-                Button("在 Codex 中打开", systemImage: "arrow.up.right.square") {
-                  model.openInCodex(task)
-                }
-              }
-
-              Button {
-                model.openInCodex(task)
-              } label: {
-                Image(systemName: "arrow.up.right.square")
-                  .font(.system(size: 12, weight: .semibold))
-                  .foregroundStyle(CMColor.muted)
-                  .frame(width: 24, height: 24)
-                  .contentShape(Rectangle())
-              }
-              .buttonStyle(.plain)
-              .help("在 Codex 中打开")
-              .accessibilityLabel("在 Codex 中打开 \(task.title)")
-              .padding(.trailing, 8)
-              .padding(.bottom, 8)
-            }
+              },
+              onOpen: { model.openInCodex(task) }
+            )
           }
         }
         .padding(20)
-        .animation(.snappy(duration: 0.25), value: model.filteredTasks.map(\.id))
+        .animation(
+          reduceMotion || visibleTasks.count > 80 ? nil : .snappy(duration: 0.2),
+          value: visibleTasks.map(\.id)
+        )
       }
     }
   }
@@ -274,12 +338,22 @@ private struct NoticeBanner: View {
   var body: some View {
     HStack(spacing: 10) {
       Image(systemName: tone.icon)
-      Text(message).font(CMFont.body(12, weight: .medium)).lineLimit(2)
-      Button(action: dismiss) { Image(systemName: "xmark") }.buttonStyle(.plain)
+      Text(message)
+        .font(CMFont.body(12, weight: .medium))
+        .lineLimit(3)
+        .fixedSize(horizontal: false, vertical: true)
+      Button(action: dismiss) {
+        Image(systemName: "xmark")
+          .frame(width: 28, height: 28)
+          .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .accessibilityLabel("关闭提示")
     }
     .foregroundStyle(tone.color)
     .padding(.horizontal, 14)
     .padding(.vertical, 9)
+    .frame(maxWidth: 600)
     .background(CMColor.porcelain, in: RoundedRectangle(cornerRadius: 8))
     .overlay(RoundedRectangle(cornerRadius: 8).stroke(tone.color.opacity(0.4), lineWidth: 1))
     .shadow(color: CMColor.ink.opacity(0.12), radius: 8, y: 4)

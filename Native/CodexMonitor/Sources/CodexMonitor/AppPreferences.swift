@@ -46,6 +46,24 @@ final class AppPreferences {
     didSet { defaults.set(privacyMode, forKey: Key.privacyMode) }
   }
 
+  func displayTitle(for task: TaskRecord) -> String {
+    privacyMode ? "任务预览已隐藏" : task.title
+  }
+
+  func displayProjectName(for task: TaskRecord) -> String {
+    privacyMode ? "项目已隐藏" : task.projectName
+  }
+
+  func displaySummary(for task: TaskRecord) -> String? {
+    guard !privacyMode else { return nil }
+    return task.lastSummary
+  }
+
+  func displayBranch(for task: TaskRecord) -> String? {
+    guard !privacyMode else { return nil }
+    return task.branch
+  }
+
   init(defaults: UserDefaults = .standard) {
     self.defaults = defaults
     codexPath = defaults.string(forKey: Key.codexPath) ?? ""

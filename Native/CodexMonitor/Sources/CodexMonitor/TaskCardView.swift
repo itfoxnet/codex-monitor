@@ -2,60 +2,94 @@ import CodexMonitorCore
 import SwiftUI
 
 struct TaskCardView: View {
+  @Environment(AppModel.self) private var model
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
   let task: TaskRecord
   let selected: Bool
+  let onSelect: () -> Void
+  let onOpen: () -> Void
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
       Rectangle().fill(task.displayStatus.color).frame(height: 3)
 
-      VStack(alignment: .leading, spacing: 10) {
-        HStack(alignment: .top, spacing: 10) {
-          statusMedallion
-          VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: 6) {
-              Text(StaffIdentity.name(for: task.id))
-                .font(CMFont.body(14, weight: .bold))
-              Text("#\(StaffIdentity.shortID(for: task.id))")
-                .font(CMFont.mono(9))
-                .foregroundStyle(CMColor.muted)
+      Button(action: onSelect) {
+        VStack(alignment: .leading, spacing: 10) {
+          HStack(alignment: .top, spacing: 10) {
+            statusMedallion
+            VStack(alignment: .leading, spacing: 2) {
+              HStack(spacing: 6) {
+                Text(StaffIdentity.name(for: task.id))
+                  .font(CMFont.body(14, weight: .bold))
+                Text("#\(StaffIdentity.shortID(for: task.id))")
+                  .font(CMFont.mono(9))
+                  .foregroundStyle(CMColor.muted)
+              }
+              Text(
+                "柜台 \(StaffIdentity.deskNumber(for: task.id)) · \(model.preferences.displayProjectName(for: task))"
+              )
+              .font(CMFont.mono(9))
+              .foregroundStyle(CMColor.muted)
+              .lineLimit(1)
             }
-            Text("柜台 \(StaffIdentity.deskNumber(for: task.id)) · \(task.projectName)")
+            Spacer(minLength: 0)
+          }
+
+          Text(model.preferences.displayTitle(for: task))
+            .font(CMFont.body(13, weight: .semibold))
+            .foregroundStyle(CMColor.ink)
+            .lineLimit(2)
+            .frame(maxWidth: .infinity, minHeight: 34, alignment: .topLeading)
+
+          HStack {
+            StatusPill(status: task.displayStatus)
+            Spacer()
+            Text(RelativeTimeText.string(since: task.updatedAt))
               .font(CMFont.mono(9))
               .foregroundStyle(CMColor.muted)
           }
-          Spacer(minLength: 0)
         }
-
-        Text(task.title)
-          .font(CMFont.body(13, weight: .semibold))
-          .foregroundStyle(CMColor.ink)
-          .lineLimit(2)
-          .frame(maxWidth: .infinity, alignment: .leading)
-
-        HStack {
-          StatusPill(status: task.displayStatus)
-          Spacer()
-          Text(RelativeTimeText.string(since: task.updatedAt))
-            .font(CMFont.mono(9))
-            .foregroundStyle(CMColor.muted)
-        }
-
-        HStack(spacing: 8) {
-          if let branch = task.branch, !branch.isEmpty {
-            Label(branch, systemImage: "arrow.triangle.branch")
-              .lineLimit(1)
-          }
-          Spacer(minLength: 0)
-          Text(
-            task.ownership == .hostedLive
-              ? "SERVER" : task.isExternallyObserved ? "OBSERVED" : "ARCHIVE")
-          Color.clear.frame(width: 22, height: 18)
-        }
-        .font(CMFont.mono(9))
-        .foregroundStyle(CMColor.muted)
+        .contentShape(Rectangle())
+        .padding(14)
       }
-      .padding(14)
+      .buttonStyle(.plain)
+      .accessibilityLabel(cardAccessibilityLabel)
+      .accessibilityHint("按下查看详情")
+
+      Rectangle().fill(CMColor.hairline).frame(height: 0.5)
+
+      HStack(spacing: 8) {
+        if let branch = model.preferences.displayBranch(for: task), !branch.isEmpty {
+          Group {
+            if model.preferences.privacyMode {
+              Text(branch)
+            } else {
+              Label(branch, systemImage: "arrow.triangle.branch")
+            }
+          }
+          .lineLimit(1)
+        }
+        Spacer(minLength: 0)
+        Text(
+          task.ownership == .hostedLive
+            ? "SERVER" : task.isExternallyObserved ? "OBSERVED" : "ARCHIVE")
+        Button(action: onOpen) {
+          Image(systemName: "arrow.up.right.square")
+            .font(.system(size: 12, weight: .semibold))
+            .frame(width: 28, height: 28)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("在 Codex 中打开")
+        .accessibilityLabel("在 Codex 中打开此会话")
+      }
+      .font(CMFont.mono(9))
+      .foregroundStyle(CMColor.muted)
+      .padding(.leading, 14)
+      .padding(.trailing, 8)
+      .padding(.vertical, 6)
+      .frame(minHeight: 40)
     }
     .background(CMColor.porcelain)
     .clipShape(RoundedRectangle(cornerRadius: 9))
@@ -73,7 +107,9 @@ struct TaskCardView: View {
           .background(CMColor.raiseRed, in: RoundedRectangle(cornerRadius: 8))
           .overlay(RoundedRectangle(cornerRadius: 8).stroke(CMColor.porcelain, lineWidth: 3))
           .offset(x: 7, y: -9)
-          .transition(.opacity.combined(with: .scale(scale: 0.85, anchor: .bottomLeading)))
+          .transition(
+            reduceMotion
+              ? .opacity : .opacity.combined(with: .scale(scale: 0.85, anchor: .bottomLeading)))
       } else if task.displayStatus == .completedUnseen {
         Image(systemName: "hand.raised.fill")
           .font(.system(size: 17, weight: .bold))
@@ -88,10 +124,15 @@ struct TaskCardView: View {
       }
     }
     .contentShape(RoundedRectangle(cornerRadius: 9))
-    .accessibilityElement(children: .combine)
-    .accessibilityLabel(
-      "\(StaffIdentity.name(for: task.id))，\(task.projectName)，\(task.displayStatus.title)，\(task.title)"
-    )
+    .contextMenu {
+      Button("在 Codex 中打开", systemImage: "arrow.up.right.square", action: onOpen)
+    }
+  }
+
+  private var cardAccessibilityLabel: String {
+    let identity = "\(StaffIdentity.name(for: task.id))，工号 \(StaffIdentity.shortID(for: task.id))"
+    return
+      "\(identity)，\(model.preferences.displayProjectName(for: task))，\(task.displayStatus.title)，\(model.preferences.displayTitle(for: task))，更新于 \(RelativeTimeText.string(since: task.updatedAt))"
   }
 
   private var statusMedallion: some View {

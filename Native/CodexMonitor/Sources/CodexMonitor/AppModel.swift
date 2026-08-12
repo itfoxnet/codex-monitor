@@ -6,28 +6,6 @@ import Foundation
 import Observation
 import SwiftUI
 
-enum TaskFilter: String, CaseIterable, Identifiable {
-  case all
-  case attention
-  case running
-  case completed
-  case waiting
-  case history
-
-  var id: String { rawValue }
-
-  var title: String {
-    switch self {
-    case .all: "全部会话"
-    case .attention: "举手"
-    case .running: "办理中"
-    case .completed: "已完成"
-    case .waiting: "等待中"
-    case .history: "历史档案"
-    }
-  }
-}
-
 struct ReportAcknowledgement: Equatable {
   let threadIDs: [String]
   let message: String
@@ -59,7 +37,7 @@ final class AppModel {
   var connection = ConnectionStatus()
   var board = TaskBoardState()
   var models: [ModelOption] = []
-  var selectedProjectID: String?
+  private(set) var selectedProjectID: String?
   var selectedTaskID: String?
   var searchText = ""
   var filter: TaskFilter = .all
@@ -92,6 +70,9 @@ final class AppModel {
   private var nextThreadSyncID: UInt64 = 0
   private var discoveryFailureCount = 0
   private var pendingNewThreadObservationIDs = Set<String>()
+  private var filteredTaskCacheScope: TaskQueryScope?
+  private var filteredTaskCacheRevision: UInt64?
+  private var filteredTaskCache: [TaskRecord] = []
 
   init(
     preferences: AppPreferences? = nil,
@@ -105,62 +86,34 @@ final class AppModel {
   }
 
   var tasks: [TaskRecord] {
-    board.tasks.sorted {
-      if $0.displayStatus.attentionPriority != $1.displayStatus.attentionPriority {
-        return $0.displayStatus.attentionPriority < $1.displayStatus.attentionPriority
-      }
-      if $0.updatedAt != $1.updatedAt { return $0.updatedAt > $1.updatedAt }
-      return $0.id.localizedStandardCompare($1.id) == .orderedAscending
-    }
+    board.tasks
   }
 
   var filteredTasks: [TaskRecord] {
-    var visible = naturallyFilteredTasks
-    let query = normalizedSearchText
-    guard let selectionAnchor,
-      selectionAnchor.filter == filter,
-      selectionAnchor.projectID == selectedProjectID,
-      selectionAnchor.query == query,
-      selectionAnchor.taskID == selectedTaskID,
-      let selectedTask = board.tasksByID[selectionAnchor.taskID]
-    else { return visible }
-
-    visible.removeAll { $0.id == selectionAnchor.taskID }
-    visible.insert(selectedTask, at: min(selectionAnchor.visibleIndex, visible.count))
-    return visible
+    naturallyFilteredTasks
   }
 
   private var naturallyFilteredTasks: [TaskRecord] {
-    tasks.filter(matchesCurrentScope)
+    let scope = currentQueryScope
+    if filteredTaskCacheScope != scope || filteredTaskCacheRevision != board.revision {
+      filteredTaskCacheScope = scope
+      filteredTaskCacheRevision = board.revision
+      filteredTaskCache = board.filteredTasks(in: scope)
+    }
+    return filteredTaskCache
   }
 
   private var normalizedSearchText: String {
     searchText.trimmingCharacters(in: .whitespacesAndNewlines)
   }
 
-  private func matchesCurrentScope(_ task: TaskRecord) -> Bool {
-    if let selectedProjectID, task.projectID != selectedProjectID { return false }
-    switch filter {
-    case .attention where !task.displayStatus.needsManager: return false
-    case .running where task.displayStatus != .running: return false
-    case .completed where ![.completedUnseen, .completedSeen].contains(task.displayStatus):
-      return false
-    case .waiting where ![.waiting, .interrupted, .unknown].contains(task.displayStatus):
-      return false
-    case .history where task.displayStatus != .historyOnly: return false
-    default: break
-    }
-    let query = normalizedSearchText
-    guard !query.isEmpty else { return true }
-    return [
-      task.id,
-      task.sessionID,
-      task.title,
-      task.projectName,
-      task.branch ?? "",
-      StaffIdentity.name(for: task.id),
-      StaffIdentity.shortID(for: task.id),
-    ].contains { $0.localizedCaseInsensitiveContains(query) }
+  private var currentQueryScope: TaskQueryScope {
+    TaskQueryScope(
+      projectID: selectedProjectID,
+      filter: filter,
+      query: normalizedSearchText,
+      hidesSensitiveContent: preferences.privacyMode
+    )
   }
 
   var selectedTask: TaskRecord? {
@@ -179,28 +132,24 @@ final class AppModel {
   var canManageTasks: Bool { connection.isOnline && protocolCompatible }
 
   var scopedTasks: [TaskRecord] {
-    guard let selectedProjectID else { return tasks }
-    return tasks.filter { $0.projectID == selectedProjectID }
+    board.tasks(projectID: selectedProjectID)
   }
 
-  var attentionTasks: [TaskRecord] { tasks.filter { $0.displayStatus.needsManager } }
-  var managerAttentionCount: Int { attentionTasks.count }
-  var runningCount: Int { tasks.count { $0.displayStatus == .running } }
-  var approvalCount: Int {
-    tasks.count { $0.displayStatus == .needsApproval || $0.displayStatus == .needsInput }
+  var attentionTasks: [TaskRecord] {
+    board.filteredTasks(in: TaskQueryScope(projectID: nil, filter: .attention, query: ""))
   }
-  var completedUnreadCount: Int { tasks.count { $0.displayStatus == .completedUnseen } }
-  var unknownCount: Int { tasks.count { $0.displayStatus == .unknown } }
-  var historyCount: Int { tasks.count { $0.displayStatus == .historyOnly } }
-  var scopedRunningCount: Int { scopedTasks.count { $0.displayStatus == .running } }
-  var scopedApprovalCount: Int {
-    scopedTasks.count { $0.displayStatus == .needsApproval || $0.displayStatus == .needsInput }
-  }
-  var scopedAttentionCount: Int { scopedTasks.count { $0.displayStatus.needsManager } }
-  var scopedCompletedUnreadCount: Int {
-    scopedTasks.count { $0.displayStatus == .completedUnseen }
-  }
-  var scopedHistoryCount: Int { scopedTasks.count { $0.displayStatus == .historyOnly } }
+  var managerAttentionCount: Int { board.metrics.attention }
+  var runningCount: Int { board.metrics.running }
+  var approvalCount: Int { board.metrics.approval }
+  var completedUnreadCount: Int { board.metrics.completedUnread }
+  var unknownCount: Int { board.metrics.unknown }
+  var historyCount: Int { board.metrics.history }
+  private var scopedMetrics: TaskMetrics { board.metrics(projectID: selectedProjectID) }
+  var scopedRunningCount: Int { scopedMetrics.running }
+  var scopedApprovalCount: Int { scopedMetrics.approval }
+  var scopedAttentionCount: Int { scopedMetrics.attention }
+  var scopedCompletedUnreadCount: Int { scopedMetrics.completedUnread }
+  var scopedHistoryCount: Int { scopedMetrics.history }
 
   func start() async {
     guard !started else { return }
@@ -346,7 +295,7 @@ final class AppModel {
     if let selectedProjectID,
       !board.projects.contains(where: { $0.id == selectedProjectID })
     {
-      self.selectedProjectID = nil
+      selectProject(id: nil)
     }
     if let selectedTaskID, board.tasksByID[selectedTaskID] == nil {
       dismissTaskSelection()
@@ -385,7 +334,7 @@ final class AppModel {
 
     let previous = Dictionary(
       uniqueKeysWithValues: board.tasks.map { ($0.id, $0.displayStatus) })
-    let previousBoard = board
+    let previousRevision = board.revision
     board.applyExternalSessionSnapshots(
       snapshots,
       reportNewCompletionsFor: reportNewCompletionsFor.union(pendingNewThreadObservationIDs)
@@ -394,7 +343,7 @@ final class AppModel {
       snapshot.lifecycle == .unknown ? nil : threadID
     }
     pendingNewThreadObservationIDs.subtract(conclusivelyObservedIDs)
-    guard board != previousBoard else {
+    guard board.revision != previousRevision else {
       externalObservationInitialized = true
       return
     }
@@ -501,6 +450,10 @@ final class AppModel {
   }
 
   func takeOver(_ task: TaskRecord, prompt: String) async -> Bool {
+    guard !task.isExternalActive else {
+      bannerMessage = "这个会话正在另一个 Codex 客户端中运行，请先在原客户端结束或暂停任务。"
+      return false
+    }
     guard canManageTasks, !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
       return false
     }
@@ -655,6 +608,19 @@ final class AppModel {
     persistCache()
   }
 
+  func selectProject(id: String?) {
+    guard selectedProjectID != id else { return }
+    selectedProjectID = id
+    filteredTaskCacheScope = nil
+    filteredTaskCacheRevision = nil
+    selectionAnchor = nil
+    selectedTaskID = TaskSelectionPolicy.retainedTaskID(
+      afterSelecting: id,
+      currentTaskID: selectedTaskID,
+      tasksByID: board.tasksByID
+    )
+  }
+
   func selectTask(_ task: TaskRecord) {
     let visible = naturallyFilteredTasks
     selectionAnchor = visible.firstIndex(where: { $0.id == task.id }).map {
@@ -715,7 +681,7 @@ final class AppModel {
     board = TaskBoardState()
     dismissTaskSelection()
     dismissReportAcknowledgement()
-    selectedProjectID = nil
+    selectProject(id: nil)
     Task {
       await notifications.clear()
       try? await refresh()
@@ -787,7 +753,8 @@ final class AppModel {
           await notifications.notify(
             task: task,
             title: "\(StaffIdentity.name(for: task.id)) 正在举手",
-            body: request.title
+            body: request.title,
+            privacyMode: preferences.privacyMode
           )
         }
       } else {
@@ -826,12 +793,16 @@ final class AppModel {
     for task in board.tasks {
       guard previous[task.id] != task.displayStatus else { continue }
       if task.displayStatus == .completedUnseen {
-        await notifications.notifyCompletion(task: task)
+        await notifications.notifyCompletion(
+          task: task,
+          privacyMode: preferences.privacyMode
+        )
       } else if task.displayStatus == .failed {
         await notifications.notify(
           task: task,
           title: "\(StaffIdentity.name(for: task.id)) 异常汇报",
-          body: task.projectName
+          body: task.projectName,
+          privacyMode: preferences.privacyMode
         )
       }
     }

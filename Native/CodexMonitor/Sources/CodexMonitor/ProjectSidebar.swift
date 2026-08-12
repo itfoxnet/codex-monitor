@@ -82,6 +82,9 @@ struct ProjectSidebar: View {
     history: Int
   ) -> some View {
     let selected = model.selectedProjectID == id
+    let privacyMode = model.preferences.privacyMode
+    let displayName = privacyMode ? privateProjectName(id: id) : name
+    let sourceHint = id == nil ? "工作台总览" : projectSourceHint(for: id)
     let activitySummary: String =
       if attention > 0 {
         "\(running) 办理 · \(attention) 举手"
@@ -95,16 +98,18 @@ struct ProjectSidebar: View {
         "暂无活动"
       }
     return Button {
-      model.selectedProjectID = id
+      model.selectProject(id: id)
     } label: {
       HStack(spacing: 10) {
         Circle()
           .fill(attention > 0 ? CMColor.raiseRed : running > 0 ? CMColor.workOrange : CMColor.muted)
           .frame(width: 8, height: 8)
         VStack(alignment: .leading, spacing: 3) {
-          Text(name)
+          Text(displayName)
             .font(CMFont.body(13, weight: .semibold))
             .lineLimit(1)
+            .truncationMode(.middle)
+            .help(privacyMode ? "隐私模式已隐藏项目名称" : name)
           Text(activitySummary)
             .font(CMFont.mono(9))
             .foregroundStyle(CMColor.muted)
@@ -115,6 +120,8 @@ struct ProjectSidebar: View {
           .foregroundStyle(CMColor.muted)
       }
       .foregroundStyle(CMColor.ink)
+      .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
+      .contentShape(Rectangle())
       .padding(.horizontal, 12)
       .padding(.vertical, 10)
       .background(selected ? CMColor.porcelain : .clear, in: RoundedRectangle(cornerRadius: 7))
@@ -129,8 +136,26 @@ struct ProjectSidebar: View {
       )
     }
     .buttonStyle(.plain)
+    .help(privacyMode ? sourceHint : "\(name)\n\(sourceHint)")
     .accessibilityLabel(
-      "\(name)，共 \(count) 个会话，\(running) 个办理中，\(attention) 个举手，\(history) 个历史档案"
+      "\(displayName)，\(sourceHint)，共 \(count) 个会话，\(running) 个办理中，\(attention) 个举手，\(history) 个历史档案"
     )
+  }
+
+  private func projectSourceHint(for id: String?) -> String {
+    guard let id else { return "工作台总览" }
+    let normalized = id.replacingOccurrences(of: "\\", with: "/")
+    if normalized.contains("/Documents/Codex/") {
+      return "Codex 工作目录"
+    }
+    if normalized.hasPrefix("cached:") {
+      return "本地缓存记录"
+    }
+    return "会话工作目录"
+  }
+
+  private func privateProjectName(id: String?) -> String {
+    guard let id else { return "全部项目" }
+    return "保密项目 · \(StaffIdentity.privateReference(for: id))"
   }
 }

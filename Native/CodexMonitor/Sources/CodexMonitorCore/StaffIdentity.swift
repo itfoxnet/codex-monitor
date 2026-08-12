@@ -19,6 +19,10 @@ public enum StaffIdentity {
     String(format: "%02d", Int(stableHash(threadID + "desk") % 90) + 10)
   }
 
+  public static func privateReference(for value: String) -> String {
+    String(format: "%04X", Int(stableHash(value) % 65_536))
+  }
+
   private static func stableHash(_ value: String) -> UInt64 {
     value.utf8.reduce(14_695_981_039_346_656_037) { hash, byte in
       (hash ^ UInt64(byte)) &* 1_099_511_628_211

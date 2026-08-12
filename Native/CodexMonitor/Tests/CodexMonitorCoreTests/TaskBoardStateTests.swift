@@ -362,9 +362,208 @@ private let thread: JSONValue = [
   #expect(state.projects.first?.tasks.map(\.id) == ["thread-a", "thread-b"])
 }
 
+@Test func projectOrderDoesNotMoveWhenAttentionStatusChanges() {
+  let alpha = TaskRecord(
+    id: "thread-alpha",
+    sessionID: "thread-alpha",
+    projectID: "alpha",
+    cwd: "/Users/demo/Alpha",
+    title: "Alpha",
+    ownership: .hostedLive,
+    displayStatus: .waiting,
+    rawStatus: "idle"
+  )
+  let beta = TaskRecord(
+    id: "thread-beta",
+    sessionID: "thread-beta",
+    projectID: "beta",
+    cwd: "/Users/demo/Beta",
+    title: "Beta",
+    ownership: .hostedLive,
+    displayStatus: .needsApproval,
+    rawStatus: "waitingOnApproval"
+  )
+
+  let state = TaskBoardState(tasksByID: [alpha.id: alpha, beta.id: beta])
+
+  #expect(state.projects.map(\.name) == ["Alpha", "Beta"])
+}
+
+@Test func largeBoardProjectionIndexesAndFiltersFifteenHundredTasks() {
+  let tasks = Dictionary(
+    uniqueKeysWithValues: (0..<1_500).map { index in
+      let projectID = "project-\(index % 75)"
+      let status: TaskDisplayStatus =
+        switch index % 5 {
+        case 0: .running
+        case 1: .completedUnseen
+        case 2: .waiting
+        case 3: .needsApproval
+        default: .historyOnly
+        }
+      let task = TaskRecord(
+        id: "thread-\(index)",
+        sessionID: "thread-\(index)",
+        projectID: projectID,
+        cwd: "/Users/demo/\(projectID)",
+        title: "Task \(index)",
+        ownership: status == .historyOnly ? .historyOnly : .hostedLive,
+        displayStatus: status,
+        rawStatus: status == .running ? "active" : "idle",
+        updatedAt: Date(timeIntervalSince1970: Double(index))
+      )
+      return (task.id, task)
+    })
+
+  let state = TaskBoardState(tasksByID: tasks)
+
+  #expect(state.tasks.count == 1_500)
+  #expect(state.projects.count == 75)
+  #expect(state.tasks(projectID: "project-42").count == 20)
+  #expect(state.metrics.total == 1_500)
+  #expect(state.metrics.running == 300)
+  #expect(state.metrics.attention == 600)
+  #expect(state.metrics(projectID: "project-42").total == 20)
+  #expect(
+    state.filteredTasks(
+      in: TaskQueryScope(projectID: "project-42", filter: .running, query: "")
+    ).allSatisfy { $0.projectID == "project-42" && $0.displayStatus == .running }
+  )
+}
+
+@Test func selectedTaskIsClearedWhenProjectChangesButRetainedForAllProjects() throws {
+  let task = TaskRecord(
+    id: "thread-a",
+    sessionID: "thread-a",
+    projectID: "project-a",
+    cwd: "/Users/demo/A",
+    title: "A",
+    ownership: .hostedLive,
+    displayStatus: .running,
+    rawStatus: "active"
+  )
+  let tasksByID = [task.id: task]
+
+  #expect(
+    TaskSelectionPolicy.retainedTaskID(
+      afterSelecting: "project-b", currentTaskID: task.id, tasksByID: tasksByID) == nil
+  )
+  #expect(
+    TaskSelectionPolicy.retainedTaskID(
+      afterSelecting: "project-a", currentTaskID: task.id, tasksByID: tasksByID) == task.id
+  )
+  #expect(
+    TaskSelectionPolicy.retainedTaskID(
+      afterSelecting: nil, currentTaskID: task.id, tasksByID: tasksByID) == task.id
+  )
+}
+
+@Test func queryFilteringNeverRetainsASelectedTaskOutsideTheActiveFilter() {
+  let running = TaskRecord(
+    id: "running",
+    sessionID: "running",
+    projectID: "project",
+    cwd: "/Users/demo/Project",
+    title: "Running",
+    ownership: .hostedLive,
+    displayStatus: .running,
+    rawStatus: "active"
+  )
+  let completed = TaskRecord(
+    id: "completed",
+    sessionID: "completed",
+    projectID: "project",
+    cwd: "/Users/demo/Project",
+    title: "Completed",
+    ownership: .hostedLive,
+    displayStatus: .completedSeen,
+    rawStatus: "completed"
+  )
+  let state = TaskBoardState(tasksByID: [running.id: running, completed.id: completed])
+
+  #expect(
+    state.filteredTasks(
+      in: TaskQueryScope(projectID: "project", filter: .running, query: "")
+    ).map(\.id) == ["running"]
+  )
+}
+
+@Test func privacyModeSearchDoesNotRevealSensitiveTaskMetadata() {
+  let task = TaskRecord(
+    id: "thread-safe-id",
+    sessionID: "session-safe-id",
+    projectID: "secret-project",
+    cwd: "/Users/demo/Customer-Secret",
+    title: "收购项目机密",
+    ownership: .hostedLive,
+    displayStatus: .running,
+    rawStatus: "active",
+    branch: "secret-merger"
+  )
+  let state = TaskBoardState(tasksByID: [task.id: task])
+
+  #expect(
+    state.filteredTasks(
+      in: TaskQueryScope(
+        projectID: nil, filter: .all, query: "机密", hidesSensitiveContent: true)
+    ).isEmpty
+  )
+  #expect(
+    state.filteredTasks(
+      in: TaskQueryScope(
+        projectID: nil, filter: .all, query: "secret-merger", hidesSensitiveContent: true)
+    ).isEmpty
+  )
+  #expect(
+    state.filteredTasks(
+      in: TaskQueryScope(
+        projectID: nil, filter: .all, query: "thread-safe-id", hidesSensitiveContent: true)
+    ).map(\.id) == [task.id]
+  )
+}
+
+@Test func unknownNotificationsDoNotInvalidateTheProjection() {
+  var state = TaskBoardState()
+  state.mergeThreads([thread], managedIDs: [])
+  let revision = state.revision
+
+  for _ in 0..<1_000 {
+    state.applyNotification(method: "item/noop", params: [:])
+  }
+
+  #expect(state.revision == revision)
+}
+
+@Test func externalActiveFlagRequiresHistoryOwnershipAndExactLifecycle() {
+  let external = TaskRecord(
+    id: "external",
+    sessionID: "external",
+    projectID: "project",
+    cwd: "/Users/demo/Project",
+    title: "External",
+    ownership: .historyOnly,
+    displayStatus: .running,
+    rawStatus: "externalActive"
+  )
+  var hosted = external
+  hosted.ownership = .hostedLive
+
+  #expect(external.isExternalActive)
+  #expect(!hosted.isExternalActive)
+}
+
 @Test func staffIdentityIsStable() {
   #expect(StaffIdentity.name(for: "thr_abc") == StaffIdentity.name(for: "thr_abc"))
   #expect(StaffIdentity.shortID(for: "thr_123456789") == "456789")
+}
+
+@Test func privateProjectReferenceDoesNotExposeThePathSuffix() {
+  let path = "/Users/example/Documents/secret-client"
+  let reference = StaffIdentity.privateReference(for: path)
+
+  #expect(reference.count == 4)
+  #expect(reference.range(of: "client", options: .caseInsensitive) == nil)
+  #expect(reference == StaffIdentity.privateReference(for: path))
 }
 
 @Test func projectIdentityNormalizesSymlinks() throws {

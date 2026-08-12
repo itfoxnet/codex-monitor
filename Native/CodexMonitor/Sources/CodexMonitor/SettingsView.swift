@@ -18,7 +18,9 @@ struct SettingsView: View {
           dismiss()
         } label: {
           Image(systemName: "xmark")
-        }.buttonStyle(.plain)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("关闭设置")
       }
       .padding(20)
       .background(CMColor.warmPaper)
@@ -29,6 +31,7 @@ struct SettingsView: View {
           settingsSection("连接", symbol: "point.3.connected.trianglepath.dotted") {
             TextField("Codex 可执行文件", text: $preferences.codexPath)
               .textFieldStyle(.roundedBorder)
+              .accessibilityLabel("Codex 可执行文件路径")
             HStack {
               Button("选择 Codex…") { chooseCodex() }
               Button("重新连接") { model.retry() }
@@ -54,9 +57,14 @@ struct SettingsView: View {
                   }
                 }
               ))
-            Text("通知只显示职员名、项目名和状态，不包含完整命令或对话。")
-              .font(CMFont.body(10))
-              .foregroundStyle(CMColor.muted)
+            Text(
+              preferences.privacyMode
+                ? "隐私模式下，通知只提示有新动态，不显示职员、项目、路径、命令或任务预览。"
+                : "通知只显示职员名、项目名和状态，不包含完整命令或对话。"
+            )
+            .font(CMFont.body(10))
+            .foregroundStyle(CMColor.muted)
+            .fixedSize(horizontal: false, vertical: true)
           }
 
           settingsSection("诊断", symbol: "stethoscope") {
@@ -76,6 +84,7 @@ struct SettingsView: View {
               .padding(6)
               .background(CMColor.ink.opacity(0.045), in: RoundedRectangle(cornerRadius: 6))
               .disabled(true)
+              .accessibilityLabel("诊断信息")
           }
 
           settingsSection("本地数据", symbol: "internaldrive") {
@@ -90,7 +99,7 @@ struct SettingsView: View {
         .padding(20)
       }
     }
-    .frame(width: 620, height: 650)
+    .frame(minWidth: 520, idealWidth: 620, minHeight: 480, idealHeight: 650)
     .background(CMColor.warmPaper)
     .task { diagnostics = await model.diagnosticsText() }
     .confirmationDialog(

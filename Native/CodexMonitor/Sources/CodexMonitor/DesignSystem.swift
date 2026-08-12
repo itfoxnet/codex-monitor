@@ -7,22 +7,23 @@ enum CMColor {
   static let porcelain = Color(hex: 0xFCFBF7)
   static let reportGreen = Color(hex: 0x347357)
   static let raiseRed = Color(hex: 0xB84A38)
-  static let workOrange = Color(hex: 0xD77A12)
-  static let muted = Color(hex: 0x747A75)
+  static let workOrange = Color(hex: 0x9A5600)
+  static let workOrangeOnDark = Color(hex: 0xF0A13A)
+  static let muted = Color(hex: 0x606762)
   static let hairline = Color(hex: 0xC9C5BA)
 }
 
 enum CMFont {
   static func display(_ size: CGFloat, weight: Font.Weight = .semibold) -> Font {
-    .custom("Manrope", size: size).weight(weight)
+    .system(size: size, weight: weight, design: .rounded)
   }
 
   static func body(_ size: CGFloat = 13, weight: Font.Weight = .regular) -> Font {
-    .custom("Manrope", size: size).weight(weight)
+    .system(size: size, weight: weight, design: .default)
   }
 
   static func mono(_ size: CGFloat = 11, weight: Font.Weight = .regular) -> Font {
-    .custom("IBM Plex Mono", size: size).weight(weight)
+    .system(size: size, weight: weight, design: .monospaced).monospacedDigit()
   }
 }
 

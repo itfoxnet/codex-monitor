@@ -1,0 +1,303 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="一个以项目为单位、轻量清晰的 Codex 会话监控仪表盘。"
+    />
+    <title>Codex Monitor · 任务雷达</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&amp;family=Manrope:wght@400;500;600;700;800&amp;display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <!-- The icon sprite uses paths from the Lucide icon set. -->
+    <svg class="icon-sprite" aria-hidden="true">
+      <symbol id="icon-layout" viewBox="0 0 24 24">
+        <rect width="18" height="18" x="3" y="3" rx="2" />
+        <path d="M3 9h18M9 21V9" />
+      </symbol>
+      <symbol id="icon-folder" viewBox="0 0 24 24">
+        <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.7-.9l-.8-1.2A2 2 0 0 0 7.9 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
+      </symbol>
+      <symbol id="icon-terminal" viewBox="0 0 24 24">
+        <polyline points="4 17 10 11 4 5" />
+        <line x1="12" x2="20" y1="19" y2="19" />
+      </symbol>
+      <symbol id="icon-activity" viewBox="0 0 24 24">
+        <path d="M3 12h4l3-9 4 18 3-9h4" />
+      </symbol>
+      <symbol id="icon-search" viewBox="0 0 24 24">
+        <circle cx="11" cy="11" r="8" />
+        <path d="m21 21-4.3-4.3" />
+      </symbol>
+      <symbol id="icon-refresh" viewBox="0 0 24 24">
+        <path d="M20 11a8.1 8.1 0 0 0-15.5-2M4 4v5h5" />
+        <path d="M4 13a8.1 8.1 0 0 0 15.5 2M20 20v-5h-5" />
+      </symbol>
+      <symbol id="icon-plus" viewBox="0 0 24 24">
+        <path d="M5 12h14M12 5v14" />
+      </symbol>
+      <symbol id="icon-chevron" viewBox="0 0 24 24">
+        <path d="m9 18 6-6-6-6" />
+      </symbol>
+      <symbol id="icon-arrow" viewBox="0 0 24 24">
+        <path d="M5 12h14M13 6l6 6-6 6" />
+      </symbol>
+      <symbol id="icon-pause" viewBox="0 0 24 24">
+        <rect width="4" height="16" x="6" y="4" rx="1" />
+        <rect width="4" height="16" x="14" y="4" rx="1" />
+      </symbol>
+      <symbol id="icon-play" viewBox="0 0 24 24">
+        <polygon points="6 3 20 12 6 21 6 3" />
+      </symbol>
+      <symbol id="icon-clock" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="9" />
+        <path d="M12 7v5l3 2" />
+      </symbol>
+      <symbol id="icon-check" viewBox="0 0 24 24">
+        <path d="m5 12 4 4L19 6" />
+      </symbol>
+      <symbol id="icon-x" viewBox="0 0 24 24">
+        <path d="M18 6 6 18M6 6l12 12" />
+      </symbol>
+      <symbol id="icon-alert" viewBox="0 0 24 24">
+        <path d="M10.3 2.9 1.8 17a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 2.9a2 2 0 0 0-3.4 0Z" />
+        <path d="M12 9v4M12 17h.01" />
+      </symbol>
+      <symbol id="icon-branch" viewBox="0 0 24 24">
+        <line x1="6" x2="6" y1="3" y2="15" />
+        <circle cx="18" cy="6" r="3" />
+        <circle cx="6" cy="18" r="3" />
+        <path d="M18 9a9 9 0 0 1-9 9" />
+      </symbol>
+      <symbol id="icon-copy" viewBox="0 0 24 24">
+        <rect width="14" height="14" x="8" y="8" rx="2" />
+        <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" />
+      </symbol>
+      <symbol id="icon-command" viewBox="0 0 24 24">
+        <path d="M18 9a3 3 0 1 0-3-3v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3V6a3 3 0 1 0-3 3Z" />
+      </symbol>
+      <symbol id="icon-menu" viewBox="0 0 24 24">
+        <path d="M4 6h16M4 12h16M4 18h16" />
+      </symbol>
+      <symbol id="icon-more" viewBox="0 0 24 24">
+        <circle cx="5" cy="12" r="1" />
+        <circle cx="12" cy="12" r="1" />
+        <circle cx="19" cy="12" r="1" />
+      </symbol>
+      <symbol id="icon-user" viewBox="0 0 24 24">
+        <circle cx="12" cy="8" r="4" />
+        <path d="M4 21a8 8 0 0 1 16 0" />
+      </symbol>
+      <symbol id="icon-hand" viewBox="0 0 24 24">
+        <path d="M18 11V6a2 2 0 0 0-4 0v5" />
+        <path d="M14 10V4a2 2 0 0 0-4 0v7" />
+        <path d="M10 10V6a2 2 0 0 0-4 0v8" />
+        <path d="M6 14v-2a2 2 0 1 0-4 0v2a10 10 0 0 0 20 0v-3a2 2 0 1 0-4 0" />
+      </symbol>
+      <symbol id="icon-key" viewBox="0 0 24 24">
+        <circle cx="7.5" cy="15.5" r="5.5" />
+        <path d="m12 12 8-8M15 9l3 3M17 7l3 3" />
+      </symbol>
+    </svg>
+
+    <div class="app-shell">
+      <aside class="sidebar" id="sidebar">
+        <div class="brand-block">
+          <div class="brand-mark" aria-hidden="true">C<span>M</span></div>
+          <div>
+            <p class="eyebrow">LOCAL OPS</p>
+            <p class="brand-name">Codex Monitor</p>
+          </div>
+          <button class="icon-button sidebar-close" id="sidebarClose" aria-label="关闭项目栏">
+            <svg><use href="#icon-x"></use></svg>
+          </button>
+        </div>
+
+        <nav class="primary-nav" aria-label="主要导航">
+          <button class="nav-item is-active" type="button">
+            <svg><use href="#icon-layout"></use></svg>
+            <span>大厅总览</span>
+            <span class="nav-key">1</span>
+          </button>
+          <button class="nav-item" type="button" data-nav-filter="running">
+            <svg><use href="#icon-activity"></use></svg>
+            <span>业务办理中</span>
+            <span class="nav-count" id="runningNavCount">0</span>
+          </button>
+          <button class="nav-item" type="button" data-nav-filter="failed">
+            <svg><use href="#icon-terminal"></use></svg>
+            <span>待经理处理</span>
+            <span class="nav-count alert-count" id="failedNavCount">0</span>
+          </button>
+        </nav>
+
+        <div class="sidebar-section">
+          <div class="section-label-row">
+            <p class="section-label">项目部门</p>
+            <button class="tiny-icon-button" type="button" aria-label="添加项目" title="添加项目">
+              <svg><use href="#icon-plus"></use></svg>
+            </button>
+          </div>
+          <div class="project-list" id="projectList"></div>
+        </div>
+
+        <div class="sidebar-foot">
+          <div class="connection-line">
+            <span class="connection-dot"></span>
+            <span>Codex 职员大厅已连接</span>
+          </div>
+          <p>轮询间隔 <span class="mono">15s</span></p>
+        </div>
+      </aside>
+
+      <main class="main-canvas">
+        <header class="topbar">
+          <div class="topbar-title">
+            <button class="icon-button menu-button" id="menuButton" aria-label="打开项目栏">
+              <svg><use href="#icon-menu"></use></svg>
+            </button>
+            <div>
+              <p class="eyebrow">MANAGER DESK / 经理席</p>
+              <h1>经理工作台</h1>
+            </div>
+          </div>
+          <div class="topbar-actions">
+            <div class="manager-chip">
+              <span class="manager-avatar"><svg><use href="#icon-user"></use></svg></span>
+              <span><small>当前角色</small><strong>经理 · 你</strong></span>
+            </div>
+            <div class="last-sync">
+              <span>最后同步</span>
+              <strong class="mono" id="lastSync">刚刚</strong>
+            </div>
+            <button class="button button-secondary" id="refreshButton" type="button">
+              <svg><use href="#icon-refresh"></use></svg>
+              <span>刷新</span>
+              <kbd>R</kbd>
+            </button>
+          </div>
+        </header>
+
+        <section class="summary-band" aria-labelledby="summaryTitle">
+          <div class="summary-intro">
+            <p class="eyebrow" id="summaryTitle">大厅情况</p>
+            <p>全部职员</p>
+          </div>
+          <article class="summary-metric summary-running">
+            <span class="metric-index">01</span>
+            <div>
+              <strong id="summaryRunning">0</strong>
+              <p><span class="status-pip running"></span>办理中</p>
+            </div>
+          </article>
+          <article class="summary-metric">
+            <span class="metric-index">02</span>
+            <div>
+              <strong id="summaryCompleted">0</strong>
+              <p><span class="status-pip completed"></span>完成举手</p>
+            </div>
+          </article>
+          <article class="summary-metric">
+            <span class="metric-index">03</span>
+            <div>
+              <strong id="summaryWaiting">0</strong>
+              <p><span class="status-pip waiting"></span>等候安排</p>
+            </div>
+          </article>
+          <article class="summary-metric summary-alert">
+            <span class="metric-index">04</span>
+            <div>
+              <strong id="summaryFailed">0</strong>
+              <p><span class="status-pip failed"></span>授权申请</p>
+            </div>
+          </article>
+        </section>
+
+        <section class="workspace" aria-labelledby="projectTitle">
+          <div class="workspace-head">
+            <div class="project-heading">
+              <span class="project-code mono" id="projectCode">PRJ—00</span>
+              <div>
+                <div class="title-with-status">
+                  <h2 id="projectTitle">全部项目</h2>
+                  <span class="live-badge"><span></span>LIVE</span>
+                </div>
+                <p id="projectMeta">查看所有 Codex 会话的运行状态</p>
+              </div>
+            </div>
+            <div class="project-progress-block">
+              <div class="progress-caption">
+                <span>今日结案率</span>
+                <strong class="mono" id="projectProgressText">0%</strong>
+              </div>
+              <div class="progress-track"><span id="projectProgressBar"></span></div>
+            </div>
+            <div class="attention-strip" id="attentionStrip" hidden>
+              <svg><use href="#icon-alert"></use></svg>
+              <p><strong id="attentionTitle">有职员举手</strong><span id="attentionText"></span></p>
+              <button type="button" class="text-button" id="attentionAction">处理</button>
+            </div>
+          </div>
+
+          <div class="toolbar">
+            <div class="status-filters" id="statusFilters" role="group" aria-label="按状态筛选">
+              <button class="filter-chip is-active" type="button" data-status="all">全部职员 <span id="allCount">0</span></button>
+              <button class="filter-chip" type="button" data-status="running">办理中 <span id="runningCount">0</span></button>
+              <button class="filter-chip" type="button" data-status="completed">已完成 <span id="completedCount">0</span></button>
+              <button class="filter-chip" type="button" data-status="waiting">等候 <span id="waitingCount">0</span></button>
+              <button class="filter-chip filter-alert" type="button" data-status="failed">举手申请 <span id="failedCount">0</span></button>
+            </div>
+            <label class="search-box">
+              <svg><use href="#icon-search"></use></svg>
+              <span class="sr-only">搜索职员</span>
+              <input id="searchInput" type="search" placeholder="搜索职员、任务或工号" autocomplete="off" />
+              <kbd>/</kbd>
+            </label>
+          </div>
+
+          <div class="session-grid-wrap">
+            <div class="session-list" id="sessionList" aria-live="polite"></div>
+            <div class="empty-state" id="emptyState" hidden>
+              <svg><use href="#icon-search"></use></svg>
+              <h3>没有匹配的职员</h3>
+              <p>试试更换状态或清空搜索条件。</p>
+              <button class="button button-secondary" id="clearFilters" type="button">清空筛选</button>
+            </div>
+          </div>
+        </section>
+
+        <footer class="canvas-foot">
+          <p><span class="mono">14</span> 位职员已到岗 · 本地数据</p>
+          <p class="shortcut-hint"><svg><use href="#icon-command"></use></svg> <span>+</span> <kbd>K</kbd> 快速搜索</p>
+        </footer>
+      </main>
+    </div>
+
+    <div class="drawer-backdrop" id="drawerBackdrop" hidden></div>
+    <aside class="session-drawer" id="sessionDrawer" aria-hidden="true" aria-labelledby="drawerTitle">
+      <div class="drawer-head">
+        <div>
+          <p class="eyebrow">EMPLOYEE REPORT / 职员汇报</p>
+          <h2 id="drawerTitle">职员工作单</h2>
+        </div>
+        <button class="icon-button" id="drawerClose" type="button" aria-label="关闭详情">
+          <svg><use href="#icon-x"></use></svg>
+        </button>
+      </div>
+      <div class="drawer-body" id="drawerBody"></div>
+      <div class="drawer-foot" id="drawerFoot"></div>
+    </aside>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+    <script src="app.js"></script>
+  </body>
+</html>

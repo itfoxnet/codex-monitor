@@ -1,0 +1,27 @@
+{
+  "id": 2,
+  "result": {
+    "data": [
+      {
+        "id": "thr_running_123456789",
+        "cwd": "/Users/example/Developer/codex-monitor",
+        "source": "appServer",
+        "status": {
+          "type": "active",
+          "activeFlags": ["waitingOnApproval"]
+        },
+        "updatedAt": 1785974400
+      },
+      {
+        "id": "thr_history_123456789",
+        "cwd": "/Users/example/Developer/other-project",
+        "source": "cli",
+        "status": {
+          "type": "notLoaded"
+        },
+        "updatedAt": 1785888000
+      }
+    ],
+    "nextCursor": null
+  }
+}

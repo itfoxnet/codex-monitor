@@ -4,6 +4,8 @@ import SwiftUI
 struct TaskCardView: View {
   @Environment(AppModel.self) private var model
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @Environment(\.colorSchemeContrast) private var contrast
+  @State private var isCardHovered = false
 
   let task: TaskRecord
   let selected: Bool
@@ -53,7 +55,7 @@ struct TaskCardView: View {
         .contentShape(Rectangle())
         .padding(14)
       }
-      .buttonStyle(.plain)
+      .buttonStyle(CMTaskCardButtonStyle(selected: selected))
       .accessibilityLabel(cardAccessibilityLabel)
       .accessibilityHint("按下查看详情")
 
@@ -77,10 +79,8 @@ struct TaskCardView: View {
         Button(action: onOpen) {
           Image(systemName: "arrow.up.right.square")
             .font(.system(size: 12, weight: .semibold))
-            .frame(width: 28, height: 28)
-            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(CMIconButtonStyle(tint: CMColor.muted))
         .help("在 Codex 中打开")
         .accessibilityLabel("在 Codex 中打开此会话")
       }
@@ -95,9 +95,17 @@ struct TaskCardView: View {
     .clipShape(RoundedRectangle(cornerRadius: 9))
     .overlay(
       RoundedRectangle(cornerRadius: 9)
-        .stroke(selected ? CMColor.ink : CMColor.hairline, lineWidth: selected ? 1.5 : 0.7)
+        .stroke(
+          selected ? CMColor.ink : isCardHovered ? CMColor.ink.opacity(0.48) : CMColor.hairline,
+          lineWidth: selected
+            ? (contrast == .increased ? 2 : 1.5) : contrast == .increased ? 1.2 : 0.7
+        )
     )
-    .shadow(color: CMColor.ink.opacity(0.06), radius: 8, y: 4)
+    .shadow(
+      color: CMColor.ink.opacity(isCardHovered ? (contrast == .increased ? 0.2 : 0.13) : 0.06),
+      radius: isCardHovered ? 11 : 8,
+      y: isCardHovered ? 5 : 4
+    )
     .overlay(alignment: .topTrailing) {
       if task.displayStatus == .needsApproval || task.displayStatus == .needsInput {
         Image(systemName: "hand.raised.fill")
@@ -124,6 +132,8 @@ struct TaskCardView: View {
       }
     }
     .contentShape(RoundedRectangle(cornerRadius: 9))
+    .onHover { isCardHovered = $0 }
+    .animation(reduceMotion ? nil : .easeOut(duration: CMMotion.hover), value: isCardHovered)
     .contextMenu {
       Button("在 Codex 中打开", systemImage: "arrow.up.right.square", action: onOpen)
     }

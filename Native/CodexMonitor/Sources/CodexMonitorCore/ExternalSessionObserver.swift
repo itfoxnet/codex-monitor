@@ -37,6 +37,7 @@ public actor ExternalSessionObserver {
   private let maximumInitialScanBytes: UInt64
   private var urlsByThreadID: [String: URL] = [:]
   private var entriesByThreadID: [String: Entry] = [:]
+  private var missingThreadIDs: [String: Date] = [:]
   private var indexedAt = Date.distantPast
 
   public init(
@@ -56,10 +57,17 @@ public actor ExternalSessionObserver {
 
   public func poll(threadIDs: Set<String>) -> [String: ExternalSessionSnapshot] {
     guard !threadIDs.isEmpty else { return [:] }
-    if Date.now.timeIntervalSince(indexedAt) > 60
-      || threadIDs.contains(where: { urlsByThreadID[$0] == nil })
-    {
+    let now = Date.now
+    let hasUnindexedCandidate = threadIDs.contains { threadID in
+      guard urlsByThreadID[threadID] == nil else { return false }
+      guard let checkedAt = missingThreadIDs[threadID] else { return true }
+      return now.timeIntervalSince(checkedAt) > 60
+    }
+    if now.timeIntervalSince(indexedAt) > 60 || hasUnindexedCandidate {
       rebuildIndex()
+      for threadID in threadIDs where urlsByThreadID[threadID] == nil {
+        missingThreadIDs[threadID] = now
+      }
     }
 
     var result: [String: ExternalSessionSnapshot] = [:]
@@ -108,6 +116,7 @@ public actor ExternalSessionObserver {
     }
 
     entriesByThreadID = entriesByThreadID.filter { threadIDs.contains($0.key) }
+    missingThreadIDs = missingThreadIDs.filter { threadIDs.contains($0.key) }
     return result
   }
 
@@ -145,6 +154,7 @@ public actor ExternalSessionObserver {
       index[threadID] = url
     }
     urlsByThreadID = index
+    missingThreadIDs = missingThreadIDs.filter { index[$0.key] == nil }
   }
 
   private static func metadata(for url: URL) -> (size: UInt64, modifiedAt: Date)? {

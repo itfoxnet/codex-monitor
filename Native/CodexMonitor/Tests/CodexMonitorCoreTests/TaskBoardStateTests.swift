@@ -221,6 +221,44 @@ private let thread: JSONValue = [
   #expect(snapshots[threadID]?.lifecycle == .completed)
 }
 
+@Test func staleThreadMetadataIsPromotedByFreshRolloutActivity() async throws {
+  let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+  let day = root.appendingPathComponent("2026/08/12")
+  let threadID = "019feada-65f9-7f20-b650-6ac128e2fdf5"
+  let log = day.appendingPathComponent("rollout-2026-08-10T16-46-49-\(threadID).jsonl")
+  try FileManager.default.createDirectory(at: day, withIntermediateDirectories: true)
+  try Data(
+    """
+    {"type":"event_msg","payload":{"type":"task_started"}}
+    {"type":"event_msg","payload":{"type":"token_count"}}
+
+    """.utf8
+  ).write(to: log)
+  defer { try? FileManager.default.removeItem(at: root) }
+
+  let oldMetadata = Date.now.addingTimeInterval(-24 * 60 * 60)
+  let task = TaskRecord(
+    id: threadID,
+    sessionID: threadID,
+    projectID: "demo-project",
+    cwd: "/Users/demo/demo-project",
+    title: "示例任务",
+    ownership: .historyOnly,
+    displayStatus: .historyOnly,
+    rawStatus: "notLoaded",
+    updatedAt: oldMetadata
+  )
+  var state = TaskBoardState(tasksByID: [threadID: task])
+  let observer = ExternalSessionObserver(sessionsRoot: root)
+
+  let snapshots = await observer.poll(
+    threadIDs: ExternalObservationPolicy.candidateThreadIDs(tasks: state.tasks))
+  state.applyExternalSessionSnapshots(snapshots)
+
+  #expect(state.tasksByID[threadID]?.displayStatus == .running)
+  #expect(state.tasksByID[threadID]?.rawStatus == "externalActive")
+}
+
 @Test func approvalRequestRaisesAndResolvesTheCard() throws {
   var state = TaskBoardState()
   state.mergeThreads([thread], managedIDs: ["thr_019fd2f0"])
@@ -300,6 +338,39 @@ private let thread: JSONValue = [
   )
   #expect(state.tasks.first?.openAttentions.count == 1)
   #expect(state.tasks.first?.displayStatus == .needsApproval)
+}
+
+@Test func failedResponseRestoresOnlyItsOwnConcurrentRequest() throws {
+  var state = TaskBoardState()
+  state.mergeThreads([thread], managedIDs: ["thr_019fd2f0"])
+  let firstRequest = state.addServerRequest(
+    id: .integer(1),
+    method: "item/commandExecution/requestApproval",
+    params: ["threadId": "thr_019fd2f0", "turnId": "turn_1", "itemId": "item_1"],
+    generation: 3
+  )
+  let first = try #require(firstRequest)
+  let secondRequest = state.addServerRequest(
+    id: .integer(2),
+    method: "item/fileChange/requestApproval",
+    params: ["threadId": "thr_019fd2f0", "turnId": "turn_1", "itemId": "item_2"],
+    generation: 3
+  )
+  let second = try #require(secondRequest)
+
+  let markedFirst = state.markResponding(first)
+  let markedSecond = state.markResponding(second)
+  let restoredFirst = state.restoreOpenRequest(first)
+  #expect(markedFirst)
+  #expect(markedSecond)
+  #expect(restoredFirst)
+
+  let requests = try #require(state.tasks.first?.attentions)
+  #expect(requests.first { $0.id == first.id }?.state == .open)
+  #expect(requests.first { $0.id == second.id }?.state == .responding)
+  #expect(state.tasks.first?.displayStatus == .needsApproval)
+  let restoredFirstAgain = state.restoreOpenRequest(first)
+  #expect(!restoredFirstAgain)
 }
 
 @Test func lateCompletionCannotFinishANewerActiveTurn() {
@@ -488,6 +559,43 @@ private let thread: JSONValue = [
   )
 }
 
+@Test func inspectingATaskFreezesExistingCardOrderWithoutBreakingTheFilter() {
+  let waiting = TaskRecord(
+    id: "waiting", sessionID: "waiting", projectID: "p", cwd: "/p", title: "Waiting",
+    ownership: .hostedLive, displayStatus: .waiting, rawStatus: "idle",
+    updatedAt: Date(timeIntervalSince1970: 1)
+  )
+  let running = TaskRecord(
+    id: "running", sessionID: "running", projectID: "p", cwd: "/p", title: "Running",
+    ownership: .hostedLive, displayStatus: .running, rawStatus: "active",
+    updatedAt: Date(timeIntervalSince1970: 2)
+  )
+  let newlyRaised = TaskRecord(
+    id: "raised", sessionID: "raised", projectID: "p", cwd: "/p", title: "Raised",
+    ownership: .hostedLive, displayStatus: .needsApproval, rawStatus: "waitingOnApproval",
+    updatedAt: Date(timeIntervalSince1970: 3)
+  )
+
+  let stable = StableTaskOrderPolicy.apply(
+    previousOrder: [waiting.id, running.id],
+    to: [newlyRaised, running, waiting]
+  )
+  #expect(stable.map(\.id) == [waiting.id, running.id, newlyRaised.id])
+
+  let filtered = StableTaskOrderPolicy.apply(
+    previousOrder: [waiting.id, running.id],
+    to: [running]
+  )
+  #expect(filtered.map(\.id) == [running.id])
+}
+
+@Test func adaptiveGridNavigationMatchesTheVisibleWidth() {
+  #expect(AdaptiveTaskGridPolicy.columnCount(windowWidth: 900) == 2)
+  #expect(AdaptiveTaskGridPolicy.columnCount(windowWidth: 1_180, inspectorWidth: 380) == 1)
+  #expect(AdaptiveTaskGridPolicy.columnCount(windowWidth: 1_180) == 3)
+  #expect(AdaptiveTaskGridPolicy.columnCount(windowWidth: 1_600) == 4)
+}
+
 @Test func privacyModeSearchDoesNotRevealSensitiveTaskMetadata() {
   let task = TaskRecord(
     id: "thread-safe-id",
@@ -564,6 +672,41 @@ private let thread: JSONValue = [
   #expect(reference.count == 4)
   #expect(reference.range(of: "client", options: .caseInsensitive) == nil)
   #expect(reference == StaffIdentity.privateReference(for: path))
+}
+
+@Test func privacyRenderingIsOptInAndPreservesExplicitChoices() {
+  #expect(!PrivacyPreferencePolicy.isEnabled(storedValue: nil))
+  #expect(PrivacyPreferencePolicy.isEnabled(storedValue: true))
+  #expect(!PrivacyPreferencePolicy.isEnabled(storedValue: false))
+}
+
+@Test func externalObservationDoesNotTrustStaleAppServerMetadata() {
+  let oldExternal = TaskRecord(
+    id: "019feada-65f9-7f20-b650-6ac128e2fdf5",
+    sessionID: "019feada-65f9-7f20-b650-6ac128e2fdf5",
+    projectID: "demo-project",
+    cwd: "/Users/demo/demo-project",
+    title: "示例任务",
+    ownership: .historyOnly,
+    displayStatus: .historyOnly,
+    rawStatus: "notLoaded",
+    updatedAt: Date(timeIntervalSince1970: 1)
+  )
+  let hosted = TaskRecord(
+    id: "hosted-thread",
+    sessionID: "hosted-thread",
+    projectID: "monitor",
+    cwd: "/Users/demo/monitor",
+    title: "Hosted",
+    ownership: .hostedLive,
+    displayStatus: .running,
+    rawStatus: "active",
+    updatedAt: .now
+  )
+
+  let candidates = ExternalObservationPolicy.candidateThreadIDs(tasks: [oldExternal, hosted])
+
+  #expect(candidates == [oldExternal.id])
 }
 
 @Test func projectIdentityNormalizesSymlinks() throws {

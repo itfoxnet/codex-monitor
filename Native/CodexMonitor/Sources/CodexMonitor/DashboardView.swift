@@ -3,14 +3,20 @@ import SwiftUI
 
 struct DashboardView: View {
   @Environment(AppModel.self) private var model
+  @Environment(AppCoordinator.self) private var coordinator
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @FocusState private var searchFocused: Bool
+  @State private var searchHovered = false
 
   var body: some View {
     @Bindable var model = model
 
     GeometryReader { geometry in
       let usesCompactDetail = geometry.size.width < 1_180
+      let gridColumns = AdaptiveTaskGridPolicy.columnCount(
+        windowWidth: geometry.size.width,
+        inspectorWidth: !usesCompactDetail && model.selectedTaskID != nil ? 380 : 0
+      )
 
       NavigationSplitView {
         ProjectSidebar()
@@ -47,33 +53,60 @@ struct DashboardView: View {
       .toolbar {
         ToolbarItemGroup {
           Button {
-            model.isNewTaskPresented = true
+            coordinator.present(.newTask)
           } label: {
             Label("交办任务", systemImage: "plus")
           }
           .disabled(!model.canManageTasks)
 
           Button {
-            Task { try? await model.refresh() }
+            Task { await model.refreshFromUI() }
           } label: {
-            Label("刷新", systemImage: "arrow.clockwise")
+            if model.refreshPhase.isRefreshing {
+              ProgressView()
+                .controlSize(.small)
+                .accessibilityLabel("正在核对状态")
+            } else {
+              Label("刷新", systemImage: "arrow.clockwise")
+            }
           }
-          .disabled(!model.connection.isOnline)
+          .help(model.refreshPhase.isRefreshing ? "正在核对所有会话状态" : "立即核对所有会话状态")
+          .disabled(!model.connection.isOnline || model.refreshPhase.isRefreshing)
 
           Button {
-            model.isSettingsPresented = true
+            coordinator.present(.settings)
           } label: {
             Label("设置", systemImage: "slider.horizontal.3")
           }
         }
       }
-      .sheet(isPresented: $model.isNewTaskPresented) { NewTaskSheet() }
-      .sheet(isPresented: $model.isSettingsPresented) { SettingsView() }
+      .sheet(
+        item: Binding(
+          get: { coordinator.modalRoute },
+          set: { coordinator.modalRoute = $0 }
+        )
+      ) { route in
+        switch route {
+        case .newTask: NewTaskSheet()
+        case .settings: SettingsView()
+        }
+      }
       .overlay(alignment: .top) {
         if let message = model.bannerMessage {
-          NoticeBanner(message: message, tone: .error) { model.bannerMessage = nil }
-            .padding(.top, 8)
-            .transition(.move(edge: .top).combined(with: .opacity))
+          Group {
+            if case .failed = model.refreshPhase {
+              NoticeBanner(
+                message: message,
+                tone: .error,
+                actionTitle: "重试",
+                action: model.retryRefresh
+              ) { model.dismissRefreshFailure() }
+            } else {
+              NoticeBanner(message: message, tone: .error) { model.bannerMessage = nil }
+            }
+          }
+          .padding(.top, 8)
+          .transition(.move(edge: .top).combined(with: .opacity))
         } else if let message = model.protocolWarningMessage {
           NoticeBanner(message: message, tone: .warning) { model.protocolWarningMessage = nil }
             .padding(.top, 8)
@@ -93,7 +126,10 @@ struct DashboardView: View {
       }
       .animation(reduceMotion ? nil : .snappy, value: model.reportAcknowledgement)
       .onChange(of: model.searchFocusRequest) { _, _ in searchFocused = true }
-      .onMoveCommand { model.moveSelection($0) }
+      .onMoveCommand {
+        guard !searchFocused else { return }
+        model.moveSelection($0, columns: gridColumns)
+      }
     }
     .frame(minWidth: 900, minHeight: 600)
   }
@@ -106,7 +142,7 @@ struct DashboardView: View {
         } label: {
           Label("返回工作台", systemImage: "chevron.left")
         }
-        .buttonStyle(.borderless)
+        .buttonStyle(.bordered)
         .keyboardShortcut(.cancelAction)
         Spacer()
       }
@@ -238,11 +274,9 @@ struct DashboardView: View {
           model.searchText = ""
         } label: {
           Image(systemName: "xmark.circle.fill")
-            .frame(width: 22, height: 22)
-            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
-        .foregroundStyle(CMColor.muted)
+        .buttonStyle(CMIconButtonStyle(tint: CMColor.muted))
+        .help("清除搜索")
         .accessibilityLabel("清除搜索")
       }
     }
@@ -250,7 +284,23 @@ struct DashboardView: View {
     .padding(.trailing, 6)
     .padding(.vertical, 7)
     .background(CMColor.porcelain, in: RoundedRectangle(cornerRadius: 7))
-    .overlay(RoundedRectangle(cornerRadius: 7).stroke(CMColor.hairline, lineWidth: 0.7))
+    .overlay(
+      RoundedRectangle(cornerRadius: 7)
+        .stroke(
+          searchFocused
+            ? CMColor.focusRing
+            : searchHovered ? CMColor.ink.opacity(0.42) : CMColor.hairline,
+          lineWidth: searchFocused ? 2 : searchHovered ? 1 : 0.7
+        )
+    )
+    .shadow(
+      color: CMColor.ink.opacity(searchHovered && !searchFocused ? 0.07 : 0),
+      radius: 4,
+      y: 2
+    )
+    .onHover { searchHovered = $0 }
+    .animation(reduceMotion ? nil : .easeOut(duration: CMMotion.hover), value: searchHovered)
+    .animation(reduceMotion ? nil : .easeOut(duration: CMMotion.settle), value: searchFocused)
   }
 
   private var taskBoard: some View {
@@ -263,7 +313,7 @@ struct DashboardView: View {
           Text(emptyStateDescription)
         } actions: {
           if model.canManageTasks && model.filter != .history {
-            Button("交办任务") { model.isNewTaskPresented = true }
+            Button("交办任务") { coordinator.present(.newTask) }
           } else if !model.connection.isOnline {
             Button("重新连接") { model.retry() }
           }
@@ -333,6 +383,8 @@ private enum NoticeTone {
 private struct NoticeBanner: View {
   let message: String
   let tone: NoticeTone
+  var actionTitle: String?
+  var action: (() -> Void)?
   let dismiss: () -> Void
 
   var body: some View {
@@ -342,12 +394,17 @@ private struct NoticeBanner: View {
         .font(CMFont.body(12, weight: .medium))
         .lineLimit(3)
         .fixedSize(horizontal: false, vertical: true)
+      if let actionTitle, let action {
+        Button(actionTitle, action: action)
+          .buttonStyle(.bordered)
+          .tint(tone.color)
+          .accessibilityHint("重新核对全部会话状态")
+      }
       Button(action: dismiss) {
         Image(systemName: "xmark")
-          .frame(width: 28, height: 28)
-          .contentShape(Rectangle())
       }
-      .buttonStyle(.plain)
+      .buttonStyle(CMIconButtonStyle(tint: tone.color))
+      .help("关闭提示")
       .accessibilityLabel("关闭提示")
     }
     .foregroundStyle(tone.color)
@@ -373,12 +430,14 @@ private struct UndoNotice: View {
         .font(CMFont.body(12, weight: .medium))
         .lineLimit(1)
       Button("撤销", action: undo)
-        .buttonStyle(.borderless)
+        .buttonStyle(.bordered)
+        .controlSize(.small)
         .font(CMFont.body(12, weight: .bold))
         .foregroundStyle(CMColor.reportGreen)
       Divider().frame(height: 16)
       Button(action: dismiss) { Image(systemName: "xmark") }
-        .buttonStyle(.plain)
+        .buttonStyle(CMIconButtonStyle(tint: CMColor.muted))
+        .help("关闭提示")
         .accessibilityLabel("关闭提示")
     }
     .foregroundStyle(CMColor.ink)

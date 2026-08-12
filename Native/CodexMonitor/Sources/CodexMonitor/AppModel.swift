@@ -11,12 +11,24 @@ struct ReportAcknowledgement: Equatable {
   let message: String
 }
 
+enum RefreshPhase: Equatable {
+  case idle
+  case refreshing
+  case succeeded(Date)
+  case failed(String)
+
+  var isRefreshing: Bool {
+    if case .refreshing = self { return true }
+    return false
+  }
+}
+
 private struct TaskSelectionAnchor: Equatable {
   let taskID: String
   let filter: TaskFilter
   let projectID: String?
   let query: String
-  let visibleIndex: Int
+  let visibleOrder: [String]
 }
 
 private enum ThreadSyncKind {
@@ -49,6 +61,8 @@ final class AppModel {
   var isBusy = false
   var protocolCompatible = false
   var searchFocusRequest = 0
+  private(set) var refreshPhase: RefreshPhase = .idle
+  private(set) var lastSuccessfulRefreshAt: Date?
 
   let preferences: AppPreferences
 
@@ -59,11 +73,13 @@ final class AppModel {
   private var eventTask: Task<Void, Never>?
   private var externalObservationTask: Task<Void, Never>?
   private var threadDiscoveryTask: Task<Void, Never>?
+  private var reconciliationTask: Task<Void, Never>?
   private var reconnectTask: Task<Void, Never>?
   private var acknowledgementDismissTask: Task<Void, Never>?
   private var selectionAnchor: TaskSelectionAnchor?
   private var externalObservationInitialized = false
   private var started = false
+  private var isShuttingDown = false
   private var connectionInFlight = false
   private var reconnectAttempt = 0
   private var threadSync: ThreadSync?
@@ -90,7 +106,16 @@ final class AppModel {
   }
 
   var filteredTasks: [TaskRecord] {
-    naturallyFilteredTasks
+    let natural = naturallyFilteredTasks
+    guard let selectionAnchor,
+      selectionAnchor.filter == filter,
+      selectionAnchor.projectID == selectedProjectID,
+      selectionAnchor.query == normalizedSearchText
+    else { return natural }
+    return StableTaskOrderPolicy.apply(
+      previousOrder: selectionAnchor.visibleOrder,
+      to: natural
+    )
   }
 
   private var naturallyFilteredTasks: [TaskRecord] {
@@ -154,6 +179,7 @@ final class AppModel {
   func start() async {
     guard !started else { return }
     started = true
+    isShuttingDown = false
     let events = client.events
     eventTask = Task { [weak self] in
       for await event in events {
@@ -182,6 +208,17 @@ final class AppModel {
         } catch {
           return
         }
+      }
+    }
+    reconciliationTask = Task { [weak self] in
+      while !Task.isCancelled {
+        do {
+          try await Task.sleep(for: .seconds(60))
+        } catch {
+          return
+        }
+        guard !Task.isCancelled, let self else { return }
+        await self.reconcileHostedState()
       }
     }
   }
@@ -241,6 +278,33 @@ final class AppModel {
 
   func retry() {
     Task { await connect() }
+  }
+
+  func refreshFromUI() async {
+    guard !refreshPhase.isRefreshing else { return }
+    if case .failed = refreshPhase { bannerMessage = nil }
+    refreshPhase = .refreshing
+    do {
+      try await refresh()
+      let completedAt = Date.now
+      lastSuccessfulRefreshAt = completedAt
+      refreshPhase = .succeeded(completedAt)
+    } catch is CancellationError {
+      refreshPhase = .idle
+    } catch {
+      let message = "状态核对失败：\(error.localizedDescription)"
+      refreshPhase = .failed(message)
+      bannerMessage = "\(message)。请重试。"
+    }
+  }
+
+  func retryRefresh() {
+    Task { await refreshFromUI() }
+  }
+
+  func dismissRefreshFailure() {
+    if case .failed = refreshPhase { refreshPhase = .idle }
+    bannerMessage = nil
   }
 
   func revalidateAfterWake() async {
@@ -307,7 +371,20 @@ final class AppModel {
       connection.detail = protocolCompatible ? "App Server 已连接" : "App Server 已连接（只读兼容模式）"
       connection.updatedAt = .now
     }
+    lastSuccessfulRefreshAt = .now
     persistCache()
+  }
+
+  private func reconcileHostedState() async {
+    guard connection.isOnline, !isShuttingDown else { return }
+    do {
+      try await refresh()
+      lastSuccessfulRefreshAt = .now
+    } catch is CancellationError {
+      return
+    } catch {
+      protocolWarningMessage = "自动状态核对失败，将在 60 秒内重试。也可以立即点击“刷新”重新核对。"
+    }
   }
 
   private func refreshExternalSessionStatuses(
@@ -319,13 +396,7 @@ final class AppModel {
     pendingNewThreadObservationIDs = pendingNewThreadObservationIDs.filter {
       board.tasksByID[$0]?.ownership == .historyOnly
     }
-    let observationCutoff = Date.now.addingTimeInterval(-3 * 60 * 60)
-    var threadIDs = Set(
-      board.tasks.lazy.filter {
-        $0.ownership == .historyOnly
-          && ($0.isExternallyObserved || $0.updatedAt >= observationCutoff)
-      }.map(\.id)
-    )
+    var threadIDs = ExternalObservationPolicy.candidateThreadIDs(tasks: board.tasks)
     threadIDs.formUnion(additionalThreadIDs)
     threadIDs.formUnion(pendingNewThreadObservationIDs)
     guard !threadIDs.isEmpty else { return }
@@ -495,14 +566,15 @@ final class AppModel {
         outcome: "sent"
       )
     } catch {
-      bannerMessage = error.localizedDescription
+      _ = board.restoreOpenRequest(request)
+      persistCache()
+      bannerMessage = "授权结果未能送达：\(error.localizedDescription)。这项请示仍可重试。"
       preferences.recordAudit(
         taskID: request.threadID,
         kind: request.kind,
         action: decision.rawValue,
         outcome: "failed"
       )
-      board.expireOpenRequests(olderThanGeneration: connection.generation + 1)
     }
   }
 
@@ -524,7 +596,9 @@ final class AppModel {
         outcome: "sent"
       )
     } catch {
-      bannerMessage = error.localizedDescription
+      _ = board.restoreOpenRequest(request)
+      persistCache()
+      bannerMessage = "回答未能送达：\(error.localizedDescription)。已保留填写内容，可以重试。"
       preferences.recordAudit(
         taskID: request.threadID,
         kind: request.kind,
@@ -534,17 +608,49 @@ final class AppModel {
     }
   }
 
-  func interrupt(_ task: TaskRecord) async {
-    guard canManageTasks, let turnID = task.activeTurnID else { return }
+  @discardableResult
+  func interrupt(_ task: TaskRecord) async -> Bool {
+    guard canManageTasks, let turnID = task.activeTurnID else { return false }
     do {
       try await api.interrupt(threadID: task.id, turnID: turnID)
+      return true
     } catch {
       bannerMessage = error.localizedDescription
+      return false
     }
   }
 
-  func interruptAllActiveTasks() async {
-    for task in activeTasks { await interrupt(task) }
+  func interruptAllActiveTasks() async -> Bool {
+    var allSucceeded = true
+    for task in activeTasks {
+      if !(await interrupt(task)) { allSucceeded = false }
+    }
+    return allSucceeded
+  }
+
+  func shutdown() async {
+    guard !isShuttingDown else { return }
+    isShuttingDown = true
+    eventTask?.cancel()
+    externalObservationTask?.cancel()
+    threadDiscoveryTask?.cancel()
+    reconciliationTask?.cancel()
+    reconnectTask?.cancel()
+    acknowledgementDismissTask?.cancel()
+    threadSync?.task.cancel()
+    eventTask = nil
+    externalObservationTask = nil
+    threadDiscoveryTask = nil
+    reconciliationTask = nil
+    reconnectTask = nil
+    acknowledgementDismissTask = nil
+    threadSync = nil
+    await client.stop()
+    connection.phase = .disconnected
+    connection.detail = "已安全停止"
+    connection.updatedAt = .now
+    refreshPhase = .idle
+    started = false
   }
 
   func markCompletedSeen(_ task: TaskRecord) {
@@ -623,15 +729,15 @@ final class AppModel {
 
   func selectTask(_ task: TaskRecord) {
     let visible = naturallyFilteredTasks
-    selectionAnchor = visible.firstIndex(where: { $0.id == task.id }).map {
-      TaskSelectionAnchor(
+    selectionAnchor =
+      visible.contains(where: { $0.id == task.id })
+      ? TaskSelectionAnchor(
         taskID: task.id,
         filter: filter,
         projectID: selectedProjectID,
         query: normalizedSearchText,
-        visibleIndex: $0
-      )
-    }
+        visibleOrder: visible.map(\.id)
+      ) : nil
     selectedTaskID = task.id
   }
 
@@ -649,7 +755,7 @@ final class AppModel {
     selectedTaskID = nil
   }
 
-  func moveSelection(_ direction: MoveCommandDirection) {
+  func moveSelection(_ direction: MoveCommandDirection, columns: Int) {
     let visible = filteredTasks
     guard !visible.isEmpty else { return }
     guard let selectedTaskID,
@@ -658,7 +764,7 @@ final class AppModel {
       selectTask(visible[0])
       return
     }
-    let columns = 3
+    let columns = max(1, columns)
     let delta: Int
     switch direction {
     case .left: delta = -1
@@ -668,6 +774,27 @@ final class AppModel {
     @unknown default: return
     }
     selectTask(visible[min(max(index + delta, 0), visible.count - 1)])
+  }
+
+  func revealTask(threadID: String) async {
+    selectProject(id: nil)
+    filter = .all
+    searchText = ""
+    if board.tasksByID[threadID] == nil {
+      do {
+        try await refresh()
+      } catch {
+        dismissTaskSelection()
+        bannerMessage = "无法定位通知对应的会话：\(error.localizedDescription)。请刷新后重试。"
+        return
+      }
+    }
+    guard let task = board.tasksByID[threadID] else {
+      dismissTaskSelection()
+      bannerMessage = "通知对应的会话尚未同步或已不在 Codex 中。请刷新后重试。"
+      return
+    }
+    selectTask(task)
   }
 
   func enableNotifications() async {

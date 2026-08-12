@@ -4,7 +4,7 @@ import SwiftUI
 
 struct MenuBarPanel: View {
   @Environment(AppModel.self) private var model
-  @Environment(\.openWindow) private var openWindow
+  @Environment(AppCoordinator.self) private var coordinator
 
   var body: some View {
     VStack(spacing: 0) {
@@ -74,7 +74,7 @@ struct MenuBarPanel: View {
               .padding(.horizontal, 14)
               .padding(.vertical, 9)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(CMMenuRowButtonStyle())
             .accessibilityLabel(
               "\(StaffIdentity.name(for: task.id))，\(model.preferences.displayProjectName(for: task))，\(task.displayStatus.title)"
             )
@@ -99,7 +99,7 @@ struct MenuBarPanel: View {
               .padding(.vertical, 10)
               .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(CMMenuRowButtonStyle())
             .accessibilityLabel("另有 \(model.attentionTasks.count - 5) 项需要处理，查看全部")
           }
         }
@@ -107,28 +107,30 @@ struct MenuBarPanel: View {
       }
 
       HStack {
-        Button("打开经理工作台") { openMainWindow() }
+        Button {
+          openMainWindow()
+        } label: {
+          Label("打开经理工作台", systemImage: "macwindow")
+        }
+        .buttonStyle(.borderedProminent)
+        .tint(CMColor.ink)
+        .help("显示唯一的经理工作台窗口")
         Spacer()
         Button {
           NSApplication.shared.terminate(nil)
         } label: {
           Image(systemName: "power")
-            .frame(width: 28, height: 28)
-            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(CMIconButtonStyle(destructive: true))
         .help("退出 Codex Monitor")
         .accessibilityLabel("退出 Codex Monitor")
 
         Button {
-          model.isSettingsPresented = true
-          openMainWindow()
+          coordinator.present(.settings)
         } label: {
           Image(systemName: "slider.horizontal.3")
-            .frame(width: 28, height: 28)
-            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(CMIconButtonStyle(tint: CMColor.muted))
         .help("设置")
         .accessibilityLabel("打开设置")
       }
@@ -159,7 +161,6 @@ struct MenuBarPanel: View {
   }
 
   private func openMainWindow() {
-    openWindow(id: "main")
-    NSApplication.shared.activate(ignoringOtherApps: true)
+    coordinator.showMainWindow()
   }
 }

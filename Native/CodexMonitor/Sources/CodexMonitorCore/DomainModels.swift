@@ -403,6 +403,56 @@ public enum TaskSelectionPolicy {
   }
 }
 
+public enum StableTaskOrderPolicy {
+  /// Keeps already-visible cards in their previous order while a manager is inspecting a task.
+  /// Tasks that no longer match the active scope are omitted, and newly matching tasks are
+  /// appended without moving existing click targets.
+  public static func apply(previousOrder: [String], to tasks: [TaskRecord]) -> [TaskRecord] {
+    guard !previousOrder.isEmpty, !tasks.isEmpty else { return tasks }
+    let rank = Dictionary(uniqueKeysWithValues: previousOrder.enumerated().map { ($1, $0) })
+    let existing = tasks.filter { rank[$0.id] != nil }.sorted {
+      rank[$0.id, default: .max] < rank[$1.id, default: .max]
+    }
+    let newTasks = tasks.filter { rank[$0.id] == nil }
+    return existing + newTasks
+  }
+}
+
+public enum AdaptiveTaskGridPolicy {
+  public static func columnCount(
+    windowWidth: Double,
+    sidebarWidth: Double = 230,
+    inspectorWidth: Double = 0,
+    horizontalPadding: Double = 40,
+    minimumCardWidth: Double = 260,
+    spacing: Double = 16
+  ) -> Int {
+    let contentWidth = max(
+      minimumCardWidth,
+      windowWidth - sidebarWidth - inspectorWidth - horizontalPadding
+    )
+    return max(1, Int((contentWidth + spacing) / (minimumCardWidth + spacing)))
+  }
+}
+
+public enum PrivacyPreferencePolicy {
+  /// Privacy rendering changes what the manager can see, so it is enabled only by an explicit
+  /// stored choice. A missing value represents a fresh or pre-migration installation.
+  public static func isEnabled(storedValue: Bool?) -> Bool {
+    storedValue ?? false
+  }
+}
+
+public enum ExternalObservationPolicy {
+  /// App Server metadata can lag behind rollout activity for sessions owned by another Codex
+  /// process. Every external session therefore remains eligible for the lightweight local-log
+  /// observer; the observer itself avoids reading files that have not changed recently.
+  public static func candidateThreadIDs<S: Sequence>(tasks: S) -> Set<String>
+  where S.Element == TaskRecord {
+    Set(tasks.lazy.filter { $0.ownership == .historyOnly }.map(\.id))
+  }
+}
+
 public struct ProjectRecord: Equatable, Sendable, Identifiable {
   public let id: String
   public let name: String

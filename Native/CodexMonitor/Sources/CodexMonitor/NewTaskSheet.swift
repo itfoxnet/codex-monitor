@@ -23,7 +23,8 @@ struct NewTaskSheet: View {
         } label: {
           Image(systemName: "xmark")
         }
-        .buttonStyle(.plain)
+        .buttonStyle(CMIconButtonStyle(tint: CMColor.muted))
+        .help("关闭交办任务")
         .accessibilityLabel("关闭交办任务")
       }
       .padding(20)
@@ -95,7 +96,9 @@ struct NewTaskSheet: View {
         Button("取消") { dismiss() }
         Button(model.isBusy ? "正在安排…" : "开始办理") {
           Task {
-            if !(await model.createTask(draft)) {
+            if await model.createTask(draft) {
+              dismiss()
+            } else {
               submissionError = model.bannerMessage ?? "任务没有开始，请检查连接和输入。"
             }
           }

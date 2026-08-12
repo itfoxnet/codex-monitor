@@ -309,6 +309,27 @@ public struct TaskBoardState: Equatable, Sendable {
     return true
   }
 
+  /// Restores exactly one request after its response could not be delivered. Other concurrent
+  /// requests are intentionally left untouched so one transport failure cannot dismiss unrelated
+  /// manager work.
+  @discardableResult
+  public mutating func restoreOpenRequest(_ request: AttentionRequest) -> Bool {
+    guard var task = tasksByID[request.threadID],
+      let index = task.attentions.firstIndex(where: {
+        $0.id == request.id && $0.state == .responding
+      })
+    else {
+      return false
+    }
+    task.attentions[index].state = .open
+    task.displayStatus = statusForAttention(task.openAttentions)
+    task.rawStatus = "waitingOnApproval"
+    task.updatedAt = .now
+    tasksByID[task.id] = task
+    rebuildProjection()
+    return true
+  }
+
   public mutating func expireOpenRequests(olderThanGeneration generation: UInt64) {
     var changed = false
     for id in tasksByID.keys {

@@ -5,20 +5,28 @@ import SwiftUI
 struct CodexMonitorApp: App {
   @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
   @State private var model = AppModel()
+  @State private var coordinator = AppCoordinator()
 
   var body: some Scene {
-    WindowGroup("Codex Monitor", id: "main") {
+    Window("经理工作台", id: "main") {
       DashboardView()
         .environment(model)
+        .environment(coordinator)
+        .preferredColorScheme(.light)
+        .background {
+          MainWindowBridge(coordinator: coordinator) {
+            appDelegate.configure(model: model, coordinator: coordinator)
+          }
+        }
         .task {
-          appDelegate.model = model
+          appDelegate.configure(model: model, coordinator: coordinator)
           await model.start()
         }
     }
     .defaultSize(width: 1180, height: 760)
     .commands {
       CommandGroup(after: .newItem) {
-        Button("交办任务") { model.isNewTaskPresented = true }
+        Button("交办任务") { coordinator.present(.newTask) }
           .keyboardShortcut("n", modifiers: [.command, .shift])
           .disabled(!model.canManageTasks)
       }
@@ -29,9 +37,9 @@ struct CodexMonitorApp: App {
       CommandMenu("任务") {
         Button("搜索任务") { model.searchFocusRequest += 1 }
           .keyboardShortcut("k", modifiers: [.command])
-        Button("刷新状态") { Task { try? await model.refresh() } }
+        Button("刷新状态") { Task { await model.refreshFromUI() } }
           .keyboardShortcut("r", modifiers: [.command])
-          .disabled(!model.connection.isOnline)
+          .disabled(!model.connection.isOnline || model.refreshPhase.isRefreshing)
         Button("只看举手") { model.filter = .attention }
           .keyboardShortcut("1", modifiers: [.command])
         Button("只看办理中") { model.filter = .running }
@@ -51,8 +59,10 @@ struct CodexMonitorApp: App {
     MenuBarExtra {
       MenuBarPanel()
         .environment(model)
+        .environment(coordinator)
+        .preferredColorScheme(.light)
         .task {
-          appDelegate.model = model
+          appDelegate.configure(model: model, coordinator: coordinator)
           await model.start()
         }
     } label: {

@@ -69,9 +69,11 @@ final class AppPreferences {
     codexPath = defaults.string(forKey: Key.codexPath) ?? ""
     managedThreadIDs = Set(defaults.stringArray(forKey: Key.managedThreadIDs) ?? [])
     notificationsEnabled = defaults.bool(forKey: Key.notificationsEnabled)
-    privacyMode =
-      defaults.object(forKey: Key.privacyMode) == nil
-      ? true : defaults.bool(forKey: Key.privacyMode)
+    // Earlier builds treated a missing preference as enabled, even though the setting had
+    // never been chosen by the user. The live privacy rendering must be opt-in: preserve an
+    // explicit stored choice, but show normal task information for fresh and legacy installs.
+    let storedPrivacyMode = (defaults.object(forKey: Key.privacyMode) as? NSNumber)?.boolValue
+    privacyMode = PrivacyPreferencePolicy.isEnabled(storedValue: storedPrivacyMode)
   }
 
   func cache(tasks: [TaskRecord]) {
@@ -111,7 +113,7 @@ final class AppPreferences {
     codexPath = ""
     managedThreadIDs = []
     notificationsEnabled = false
-    privacyMode = true
+    privacyMode = false
     defaults.removeObject(forKey: Key.cachedTasks)
     defaults.removeObject(forKey: Key.approvalAudit)
   }

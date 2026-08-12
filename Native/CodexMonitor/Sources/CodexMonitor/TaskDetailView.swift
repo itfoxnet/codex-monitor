@@ -176,6 +176,10 @@ private struct ApprovalPanel: View {
   let request: AttentionRequest
   @State private var revealSensitive = false
 
+  private var mustRevealBeforeApproval: Bool {
+    model.preferences.privacyMode && !revealSensitive
+  }
+
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
       HStack {
@@ -189,7 +193,7 @@ private struct ApprovalPanel: View {
       }
 
       if let reason = request.reason, !reason.isEmpty {
-        Text(model.preferences.privacyMode ? "请求原因已隐藏" : reason)
+        Text(mustRevealBeforeApproval ? "请求原因已隐藏，查看授权详情后才能允许。" : reason)
           .font(CMFont.body(12))
           .foregroundStyle(CMColor.ink)
           .fixedSize(horizontal: false, vertical: true)
@@ -198,12 +202,24 @@ private struct ApprovalPanel: View {
       if request.kind == .userInput {
         UserInputApprovalView(request: request)
       } else {
-        if request.command != nil || request.workingDirectory != nil
+        if model.preferences.privacyMode && !revealSensitive {
+          VStack(alignment: .leading, spacing: 8) {
+            Label("隐私模式隐藏了本次操作范围", systemImage: "eye.slash")
+              .font(CMFont.body(11, weight: .semibold))
+            Text("请先查看命令、目录和权限范围，再决定是否允许；拒绝和取消任务始终可用。")
+              .font(CMFont.body(10))
+              .foregroundStyle(CMColor.muted)
+              .fixedSize(horizontal: false, vertical: true)
+            Button("显示本次授权详情") { revealSensitive = true }
+              .buttonStyle(.bordered)
+          }
+          .accessibilityElement(children: .contain)
+        } else if request.command != nil || request.workingDirectory != nil
           || request.requestedPermissions != nil
         {
           DisclosureGroup(isExpanded: $revealSensitive) {
             VStack(alignment: .leading, spacing: 7) {
-              if !model.preferences.privacyMode, let command = request.command {
+              if let command = request.command {
                 Text(command)
                   .font(CMFont.mono(10))
                   .textSelection(.enabled)
@@ -211,12 +227,12 @@ private struct ApprovalPanel: View {
                   .frame(maxWidth: .infinity, alignment: .leading)
                   .background(CMColor.ink.opacity(0.05), in: RoundedRectangle(cornerRadius: 5))
               }
-              if !model.preferences.privacyMode, let cwd = request.workingDirectory {
+              if let cwd = request.workingDirectory {
                 Label(cwd, systemImage: "folder")
                   .font(CMFont.mono(9))
                   .textSelection(.enabled)
               }
-              if !model.preferences.privacyMode, let permissions = request.requestedPermissions {
+              if let permissions = request.requestedPermissions {
                 Text(permissions.rendered(maxLength: 500))
                   .font(CMFont.mono(9))
                   .textSelection(.enabled)
@@ -224,10 +240,9 @@ private struct ApprovalPanel: View {
             }
             .padding(.top, 6)
           } label: {
-            Text(model.preferences.privacyMode ? "操作范围已隐藏" : "查看操作范围")
+            Text("查看操作范围")
               .font(CMFont.body(11, weight: .medium))
           }
-          .disabled(model.preferences.privacyMode)
         }
 
         HStack(spacing: 8) {
@@ -236,6 +251,7 @@ private struct ApprovalPanel: View {
           }
           .buttonStyle(.borderedProminent)
           .tint(CMColor.reportGreen)
+          .disabled(mustRevealBeforeApproval || request.state != .open)
 
           Button("拒绝") {
             Task { await model.decide(request, decision: .decline) }
@@ -246,7 +262,8 @@ private struct ApprovalPanel: View {
             Button("取消任务", role: .destructive) {
               Task { await model.decide(request, decision: .cancel) }
             }
-            .buttonStyle(.borderless)
+            .buttonStyle(.bordered)
+            .tint(CMColor.raiseRed)
           }
         }
         .disabled(request.state != .open)
@@ -324,6 +341,7 @@ private struct UserInputApprovalView: View {
       .buttonStyle(.borderedProminent)
       .tint(CMColor.reportGreen)
       .disabled(request.state != .open || !hasCompleteAnswers)
+      .accessibilityValue(request.state == .responding ? "正在提交" : "")
     }
   }
 

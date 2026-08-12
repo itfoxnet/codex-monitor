@@ -124,18 +124,8 @@ struct ProjectSidebar: View {
       .contentShape(Rectangle())
       .padding(.horizontal, 12)
       .padding(.vertical, 10)
-      .background(selected ? CMColor.porcelain : .clear, in: RoundedRectangle(cornerRadius: 7))
-      .overlay(alignment: .leading) {
-        if selected {
-          RoundedRectangle(cornerRadius: 2).fill(CMColor.ink).frame(width: 3).padding(.vertical, 3)
-        }
-      }
-      .overlay(
-        RoundedRectangle(cornerRadius: 7)
-          .stroke(selected ? CMColor.hairline : .clear, lineWidth: 0.5)
-      )
     }
-    .buttonStyle(.plain)
+    .buttonStyle(CMRowButtonStyle(selected: selected))
     .help(privacyMode ? sourceHint : "\(name)\n\(sourceHint)")
     .accessibilityLabel(
       "\(displayName)，\(sourceHint)，共 \(count) 个会话，\(running) 个办理中，\(attention) 个举手，\(history) 个历史档案"

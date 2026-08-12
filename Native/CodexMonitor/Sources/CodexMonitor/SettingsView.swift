@@ -19,7 +19,8 @@ struct SettingsView: View {
         } label: {
           Image(systemName: "xmark")
         }
-        .buttonStyle(.plain)
+        .buttonStyle(CMIconButtonStyle(tint: CMColor.muted))
+        .help("关闭设置")
         .accessibilityLabel("关闭设置")
       }
       .padding(20)

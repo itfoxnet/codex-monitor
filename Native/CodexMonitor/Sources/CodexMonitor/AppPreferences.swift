@@ -24,6 +24,7 @@ final class AppPreferences {
     static let managedThreadIDs = "managedThreadIDs"
     static let notificationsEnabled = "notificationsEnabled"
     static let privacyMode = "privacyMode"
+    static let projectSort = "projectSort"
     static let cachedTasks = "cachedTasks"
     static let approvalAudit = "approvalAudit"
   }
@@ -44,6 +45,10 @@ final class AppPreferences {
 
   var privacyMode: Bool {
     didSet { defaults.set(privacyMode, forKey: Key.privacyMode) }
+  }
+
+  var projectSort: ProjectSortOption {
+    didSet { defaults.set(projectSort.rawValue, forKey: Key.projectSort) }
   }
 
   func displayTitle(for task: TaskRecord) -> String {
@@ -74,6 +79,9 @@ final class AppPreferences {
     // explicit stored choice, but show normal task information for fresh and legacy installs.
     let storedPrivacyMode = (defaults.object(forKey: Key.privacyMode) as? NSNumber)?.boolValue
     privacyMode = PrivacyPreferencePolicy.isEnabled(storedValue: storedPrivacyMode)
+    projectSort = ProjectSortPreferencePolicy.resolve(
+      storedValue: defaults.string(forKey: Key.projectSort)
+    )
   }
 
   func cache(tasks: [TaskRecord]) {
@@ -114,6 +122,7 @@ final class AppPreferences {
     managedThreadIDs = []
     notificationsEnabled = false
     privacyMode = false
+    projectSort = .managerPriority
     defaults.removeObject(forKey: Key.cachedTasks)
     defaults.removeObject(forKey: Key.approvalAudit)
   }

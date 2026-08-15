@@ -7,6 +7,8 @@ struct NewTaskSheet: View {
   @Environment(\.dismiss) private var dismiss
   @State private var draft = TaskDraft()
   @State private var submissionError: String?
+  @State private var promptHovered = false
+  @FocusState private var promptFocused: Bool
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
@@ -24,6 +26,8 @@ struct NewTaskSheet: View {
           Image(systemName: "xmark")
         }
         .buttonStyle(CMIconButtonStyle(tint: CMColor.muted))
+        .cmKeyboardFocusable()
+        .disabled(model.isCreatingTask)
         .help("关闭交办任务")
         .accessibilityLabel("关闭交办任务")
       }
@@ -38,7 +42,9 @@ struct NewTaskSheet: View {
               TextField("选择一个代码项目", text: $draft.cwd)
                 .textFieldStyle(.roundedBorder)
                 .accessibilityLabel("项目目录")
+                .disabled(model.isCreatingTask)
               Button("选择…") { chooseDirectory() }
+                .disabled(model.isCreatingTask)
             }
           }
 
@@ -48,8 +54,26 @@ struct NewTaskSheet: View {
               .frame(minHeight: 130)
               .padding(8)
               .background(CMColor.porcelain, in: RoundedRectangle(cornerRadius: 7))
-              .overlay(RoundedRectangle(cornerRadius: 7).stroke(CMColor.hairline, lineWidth: 0.7))
+              .overlay(
+                RoundedRectangle(cornerRadius: 7)
+                  .stroke(
+                    submissionError == nil
+                      ? promptFocused
+                        ? CMColor.focusRing
+                        : promptHovered ? CMColor.ink.opacity(0.42) : CMColor.hairline
+                      : CMColor.raiseRed,
+                    lineWidth: promptFocused || submissionError != nil ? 1.5 : 0.7
+                  )
+              )
               .accessibilityLabel("任务目标")
+              .focused($promptFocused)
+              .disabled(model.isCreatingTask)
+              .opacity(model.isCreatingTask ? 0.55 : 1)
+              .onHover { promptHovered = model.isCreatingTask ? false : $0 }
+              .onChange(of: model.isCreatingTask) { _, creating in
+                if creating { promptHovered = false }
+              }
+              .onChange(of: draft.prompt) { _, _ in submissionError = nil }
           }
 
           field("模型", symbol: "cpu") {
@@ -67,6 +91,7 @@ struct NewTaskSheet: View {
             }
             .labelsHidden()
             .frame(maxWidth: 320, alignment: .leading)
+            .disabled(model.isCreatingTask)
           }
 
           HStack(alignment: .top, spacing: 9) {
@@ -94,7 +119,8 @@ struct NewTaskSheet: View {
       HStack {
         Spacer()
         Button("取消") { dismiss() }
-        Button(model.isBusy ? "正在安排…" : "开始办理") {
+          .disabled(model.isCreatingTask)
+        Button(model.isCreatingTask ? "正在安排…" : "开始办理") {
           Task {
             if await model.createTask(draft) {
               dismiss()
@@ -105,7 +131,7 @@ struct NewTaskSheet: View {
         }
         .buttonStyle(.borderedProminent)
         .tint(CMColor.ink)
-        .disabled(!draft.isValid || model.isBusy || !model.canManageTasks)
+        .disabled(!draft.isValid || model.isCreatingTask || !model.canManageTasks)
       }
       .padding(20)
       .background(CMColor.warmPaper)
@@ -113,6 +139,7 @@ struct NewTaskSheet: View {
     }
     .frame(minWidth: 520, idealWidth: 620, minHeight: 480, idealHeight: 610)
     .background(CMColor.warmPaper)
+    .interactiveDismissDisabled(model.isCreatingTask)
   }
 
   private func field<Content: View>(

@@ -53,16 +53,23 @@ final class AppModel {
   var selectedTaskID: String?
   var searchText = ""
   var filter: TaskFilter = .all
+  var projectSearchText = ""
+  var projectFilter: ProjectListFilter = .all
   var isNewTaskPresented = false
   var isSettingsPresented = false
   var bannerMessage: String?
   var protocolWarningMessage: String?
   var reportAcknowledgement: ReportAcknowledgement?
-  var isBusy = false
+  private(set) var isCreatingTask = false
+  private(set) var takingOverTaskIDs = Set<String>()
+  private(set) var interruptingTaskIDs = Set<String>()
+  private(set) var submittingRequestIDs = Set<String>()
+  private(set) var requestErrors: [String: String] = [:]
   var protocolCompatible = false
   var searchFocusRequest = 0
   private(set) var refreshPhase: RefreshPhase = .idle
   private(set) var lastSuccessfulRefreshAt: Date?
+  private(set) var statusNeedsVerification = true
 
   let preferences: AppPreferences
 
@@ -89,6 +96,16 @@ final class AppModel {
   private var filteredTaskCacheScope: TaskQueryScope?
   private var filteredTaskCacheRevision: UInt64?
   private var filteredTaskCache: [TaskRecord] = []
+  private var projectCacheScope: ProjectQueryScope?
+  private var projectCacheRevision: UInt64?
+  private var projectCache: [ProjectRecord] = []
+  private var projectOrderAnchor: [String]?
+
+  var isBusy: Bool {
+    isCreatingTask || !takingOverTaskIDs.isEmpty
+  }
+
+  var isConnecting: Bool { connectionInFlight }
 
   init(
     preferences: AppPreferences? = nil,
@@ -103,6 +120,58 @@ final class AppModel {
 
   var tasks: [TaskRecord] {
     board.tasks
+  }
+
+  var filteredProjects: [ProjectRecord] {
+    let scope = ProjectQueryScope(
+      filter: projectFilter,
+      query: projectSearchText,
+      sort: preferences.projectSort,
+      hidesSensitiveContent: preferences.privacyMode
+    )
+    if projectCacheScope != scope || projectCacheRevision != board.revision {
+      projectCacheScope = scope
+      projectCacheRevision = board.revision
+      projectCache = ProjectProjectionPolicy.apply(scope, to: board.projects)
+    }
+    var visible = projectCache
+    if let selectedProjectID,
+      !visible.contains(where: { $0.id == selectedProjectID }),
+      let selected = board.projects.first(where: { $0.id == selectedProjectID })
+    {
+      visible.insert(selected, at: 0)
+    }
+    guard let projectOrderAnchor else { return visible }
+    return StableProjectOrderPolicy.apply(previousOrder: projectOrderAnchor, to: visible)
+  }
+
+  var hasActiveProjectQuery: Bool {
+    projectFilter != .all
+      || !projectSearchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+  }
+
+  func projectIsOutsideCurrentQuery(_ id: String) -> Bool {
+    hasActiveProjectQuery && !projectCache.contains(where: { $0.id == id })
+  }
+
+  func beginProjectListInteraction() {
+    guard projectOrderAnchor == nil else { return }
+    projectOrderAnchor = filteredProjects.map(\.id)
+  }
+
+  func endProjectListInteraction() {
+    projectOrderAnchor = nil
+  }
+
+  func updateProjectQuery() {
+    projectOrderAnchor = nil
+    projectCacheScope = nil
+  }
+
+  func clearProjectQuery() {
+    projectSearchText = ""
+    projectFilter = .all
+    updateProjectQuery()
   }
 
   var filteredTasks: [TaskRecord] {
@@ -288,12 +357,14 @@ final class AppModel {
       try await refresh()
       let completedAt = Date.now
       lastSuccessfulRefreshAt = completedAt
+      statusNeedsVerification = false
       refreshPhase = .succeeded(completedAt)
     } catch is CancellationError {
       refreshPhase = .idle
     } catch {
       let message = "状态核对失败：\(error.localizedDescription)"
       refreshPhase = .failed(message)
+      statusNeedsVerification = true
       bannerMessage = "\(message)。请重试。"
     }
   }
@@ -317,6 +388,7 @@ final class AppModel {
         connection.phase = .online
         connection.detail = protocolCompatible ? "App Server 已连接" : "App Server 已连接（只读兼容模式）"
         connection.updatedAt = .now
+        statusNeedsVerification = false
         return
       } catch {
         // A live process with a broken transport must be replaced before the full handshake.
@@ -367,6 +439,7 @@ final class AppModel {
     await refreshExternalSessionStatuses(expectedGeneration: expectedGeneration)
     try ensureCurrentGeneration(expectedGeneration)
     protocolWarningMessage = nil
+    statusNeedsVerification = false
     if connection.phase == .online {
       connection.detail = protocolCompatible ? "App Server 已连接" : "App Server 已连接（只读兼容模式）"
       connection.updatedAt = .now
@@ -383,6 +456,7 @@ final class AppModel {
     } catch is CancellationError {
       return
     } catch {
+      statusNeedsVerification = true
       protocolWarningMessage = "自动状态核对失败，将在 60 秒内重试。也可以立即点击“刷新”重新核对。"
     }
   }
@@ -502,9 +576,13 @@ final class AppModel {
   }
 
   func createTask(_ draft: TaskDraft) async -> Bool {
-    guard draft.isValid, canManageTasks else { return false }
-    isBusy = true
-    defer { isBusy = false }
+    if let message = draft.localValidationMessage {
+      bannerMessage = message
+      return false
+    }
+    guard canManageTasks, !isCreatingTask else { return false }
+    isCreatingTask = true
+    defer { isCreatingTask = false }
     do {
       let started = try await api.startTask(draft)
       preferences.managedThreadIDs.insert(started.threadID)
@@ -525,11 +603,13 @@ final class AppModel {
       bannerMessage = "这个会话正在另一个 Codex 客户端中运行，请先在原客户端结束或暂停任务。"
       return false
     }
-    guard canManageTasks, !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+    guard canManageTasks,
+      !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+      takingOverTaskIDs.insert(task.id).inserted
+    else {
       return false
     }
-    isBusy = true
-    defer { isBusy = false }
+    defer { takingOverTaskIDs.remove(task.id) }
     do {
       _ = try await api.resumeAndStartTurn(
         threadID: task.id,
@@ -550,11 +630,16 @@ final class AppModel {
   }
 
   func decide(_ request: AttentionRequest, decision: ApprovalDecision) async {
+    guard submittingRequestIDs.insert(request.id).inserted else { return }
+    defer { submittingRequestIDs.remove(request.id) }
+    requestErrors[request.id] = nil
     guard canManageTasks,
       request.generation == connection.generation,
       board.markResponding(request)
     else {
-      bannerMessage = "这项请示已经失效，请等待状态重新同步。"
+      let message = "这项请示已经失效，请等待状态重新同步。"
+      requestErrors[request.id] = message
+      bannerMessage = message
       return
     }
     do {
@@ -568,7 +653,9 @@ final class AppModel {
     } catch {
       _ = board.restoreOpenRequest(request)
       persistCache()
-      bannerMessage = "授权结果未能送达：\(error.localizedDescription)。这项请示仍可重试。"
+      let message = "授权结果未能送达：\(error.localizedDescription)。这项请示仍可重试。"
+      requestErrors[request.id] = message
+      bannerMessage = message
       preferences.recordAudit(
         taskID: request.threadID,
         kind: request.kind,
@@ -579,12 +666,17 @@ final class AppModel {
   }
 
   func answer(_ request: AttentionRequest, answers: [String: [String]]) async {
+    guard submittingRequestIDs.insert(request.id).inserted else { return }
+    defer { submittingRequestIDs.remove(request.id) }
+    requestErrors[request.id] = nil
     guard canManageTasks,
       request.kind == .userInput,
       request.generation == connection.generation,
       board.markResponding(request)
     else {
-      bannerMessage = "这项请示已经失效，请等待状态重新同步。"
+      let message = "这项请示已经失效，请等待状态重新同步。"
+      requestErrors[request.id] = message
+      bannerMessage = message
       return
     }
     do {
@@ -598,7 +690,9 @@ final class AppModel {
     } catch {
       _ = board.restoreOpenRequest(request)
       persistCache()
-      bannerMessage = "回答未能送达：\(error.localizedDescription)。已保留填写内容，可以重试。"
+      let message = "回答未能送达：\(error.localizedDescription)。已保留填写内容，可以重试。"
+      requestErrors[request.id] = message
+      bannerMessage = message
       preferences.recordAudit(
         taskID: request.threadID,
         kind: request.kind,
@@ -608,9 +702,29 @@ final class AppModel {
     }
   }
 
+  func isSubmitting(_ request: AttentionRequest) -> Bool {
+    submittingRequestIDs.contains(request.id) || request.state == .responding
+  }
+
+  func requestError(for request: AttentionRequest) -> String? {
+    requestErrors[request.id]
+  }
+
+  func isTakingOver(_ task: TaskRecord) -> Bool {
+    takingOverTaskIDs.contains(task.id)
+  }
+
+  func isInterrupting(_ task: TaskRecord) -> Bool {
+    interruptingTaskIDs.contains(task.id)
+  }
+
   @discardableResult
   func interrupt(_ task: TaskRecord) async -> Bool {
-    guard canManageTasks, let turnID = task.activeTurnID else { return false }
+    guard canManageTasks,
+      let turnID = task.activeTurnID,
+      interruptingTaskIDs.insert(task.id).inserted
+    else { return false }
+    defer { interruptingTaskIDs.remove(task.id) }
     do {
       try await api.interrupt(threadID: task.id, turnID: turnID)
       return true
@@ -655,7 +769,6 @@ final class AppModel {
 
   func markCompletedSeen(_ task: TaskRecord) {
     guard task.displayStatus == .completedUnseen else { return }
-    releaseSelectionAnchor(for: task.id)
     board.markCompletedSeen(threadID: task.id)
     showReportAcknowledgement(
       threadIDs: [task.id],
@@ -701,9 +814,6 @@ final class AppModel {
         && (projectID == nil || $0.projectID == projectID)
     }
     guard !reports.isEmpty else { return }
-    if let selectedTaskID, reports.contains(where: { $0.id == selectedTaskID }) {
-      releaseSelectionAnchor(for: selectedTaskID)
-    }
     for task in reports {
       board.markCompletedSeen(threadID: task.id)
     }
@@ -717,6 +827,7 @@ final class AppModel {
   func selectProject(id: String?) {
     guard selectedProjectID != id else { return }
     selectedProjectID = id
+    if id == nil { projectOrderAnchor = nil }
     filteredTaskCacheScope = nil
     filteredTaskCacheRevision = nil
     selectionAnchor = nil
@@ -777,30 +888,40 @@ final class AppModel {
   }
 
   func revealTask(threadID: String) async {
-    selectProject(id: nil)
-    filter = .all
-    searchText = ""
     if board.tasksByID[threadID] == nil {
       do {
         try await refresh()
       } catch {
-        dismissTaskSelection()
         bannerMessage = "无法定位通知对应的会话：\(error.localizedDescription)。请刷新后重试。"
         return
       }
     }
     guard let task = board.tasksByID[threadID] else {
-      dismissTaskSelection()
       bannerMessage = "通知对应的会话尚未同步或已不在 Codex 中。请刷新后重试。"
       return
     }
+    selectProject(id: nil)
+    filter = .all
+    searchText = ""
     selectTask(task)
   }
 
-  func enableNotifications() async {
+  func revealCompletedCollection() {
+    dismissTaskSelection()
+    selectProject(id: nil)
+    projectSearchText = ""
+    projectFilter = .all
+    updateProjectQuery()
+    searchText = ""
+    filter = .completedUnseen
+  }
+
+  @discardableResult
+  func enableNotifications() async -> Bool {
     let granted = await notifications.requestAuthorization()
     preferences.notificationsEnabled = granted
     if !granted { bannerMessage = "系统没有授予通知权限。" }
+    return granted
   }
 
   func clearLocalData() {
@@ -889,6 +1010,7 @@ final class AppModel {
       }
     case .protocolError(let message, let generation):
       guard generation == connection.generation else { return }
+      statusNeedsVerification = true
       protocolWarningMessage =
         "有一条实时消息未能解析，已保留上次有效状态。当前状态可能不完整，请点击“刷新”重新核对。"
       connection.detail = "App Server 已连接（1 条消息待核对：\(message)）"

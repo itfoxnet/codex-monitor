@@ -6,6 +6,14 @@ struct SettingsView: View {
   @Environment(\.dismiss) private var dismiss
   @State private var diagnostics = ""
   @State private var showingClearConfirmation = false
+  @State private var isRequestingNotifications = false
+  @State private var isRefreshingDiagnostics = false
+  @State private var connectionMessage: String?
+  @State private var connectionMessageIsError = false
+  @State private var notificationMessage: String?
+  @State private var notificationMessageIsError = false
+  @State private var diagnosticsMessage: String?
+  @State private var localDataMessage: String?
 
   var body: some View {
     @Bindable var preferences = model.preferences
@@ -20,6 +28,7 @@ struct SettingsView: View {
           Image(systemName: "xmark")
         }
         .buttonStyle(CMIconButtonStyle(tint: CMColor.muted))
+        .cmKeyboardFocusable()
         .help("关闭设置")
         .accessibilityLabel("关闭设置")
       }
@@ -35,13 +44,32 @@ struct SettingsView: View {
               .accessibilityLabel("Codex 可执行文件路径")
             HStack {
               Button("选择 Codex…") { chooseCodex() }
-              Button("重新连接") { model.retry() }
+              Button {
+                connectionMessage = nil
+                Task {
+                  await model.connect()
+                  connectionMessageIsError = !model.connection.isOnline
+                  connectionMessage =
+                    model.connection.isOnline ? "已重新连接并同步状态。" : model.connection.detail
+                }
+              } label: {
+                if model.isConnecting {
+                  HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text("正在连接…")
+                  }
+                } else {
+                  Text("重新连接")
+                }
+              }
+              .disabled(model.isConnecting)
               Spacer()
               ConnectionBadge(status: model.connection)
             }
             Text("当前版本：\(model.connection.version ?? "未检测")")
               .font(CMFont.mono(10))
               .foregroundStyle(CMColor.muted)
+            sectionMessage(connectionMessage, isError: connectionMessageIsError)
           }
 
           settingsSection("通知与隐私", symbol: "bell.badge") {
@@ -52,12 +80,32 @@ struct SettingsView: View {
                 get: { preferences.notificationsEnabled },
                 set: { value in
                   if value {
-                    Task { await model.enableNotifications() }
+                    isRequestingNotifications = true
+                    notificationMessage = nil
+                    Task {
+                      let granted = await model.enableNotifications()
+                      isRequestingNotifications = false
+                      notificationMessageIsError = !granted
+                      notificationMessage =
+                        granted ? "任务通知已开启。" : "系统未授予通知权限，请在系统设置中允许。"
+                    }
                   } else {
                     preferences.notificationsEnabled = false
+                    notificationMessageIsError = false
+                    notificationMessage = "任务通知已关闭。"
                   }
                 }
-              ))
+              )
+            )
+            .disabled(isRequestingNotifications)
+            if isRequestingNotifications {
+              HStack(spacing: 7) {
+                ProgressView().controlSize(.small)
+                Text("正在请求系统通知权限…")
+              }
+              .font(CMFont.caption)
+              .foregroundStyle(CMColor.muted)
+            }
             Text(
               preferences.privacyMode
                 ? "隐私模式下，通知只提示有新动态，不显示职员、项目、路径、命令或任务预览。"
@@ -66,18 +114,30 @@ struct SettingsView: View {
             .font(CMFont.body(10))
             .foregroundStyle(CMColor.muted)
             .fixedSize(horizontal: false, vertical: true)
+            sectionMessage(notificationMessage, isError: notificationMessageIsError)
           }
 
           settingsSection("诊断", symbol: "stethoscope") {
             HStack {
               Button("刷新诊断") {
-                Task { diagnostics = await model.diagnosticsText() }
+                isRefreshingDiagnostics = true
+                Task {
+                  diagnostics = await model.diagnosticsText()
+                  isRefreshingDiagnostics = false
+                }
               }
+              .disabled(isRefreshingDiagnostics)
               Button("复制") {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(diagnostics, forType: .string)
+                diagnosticsMessage = "诊断信息已复制。"
               }
               .disabled(diagnostics.isEmpty)
+              if let diagnosticsMessage {
+                Label(diagnosticsMessage, systemImage: "checkmark.circle")
+                  .font(CMFont.caption)
+                  .foregroundStyle(CMColor.reportGreen)
+              }
             }
             TextEditor(text: $diagnostics)
               .font(CMFont.mono(9))
@@ -95,6 +155,11 @@ struct SettingsView: View {
             Button("清除工作台本地数据", role: .destructive) {
               showingClearConfirmation = true
             }
+            if let localDataMessage {
+              Label(localDataMessage, systemImage: "checkmark.circle")
+                .font(CMFont.caption)
+                .foregroundStyle(CMColor.reportGreen)
+            }
           }
         }
         .padding(20)
@@ -108,7 +173,10 @@ struct SettingsView: View {
       isPresented: $showingClearConfirmation,
       titleVisibility: .visible
     ) {
-      Button("清除", role: .destructive) { model.clearLocalData() }
+      Button("清除", role: .destructive) {
+        model.clearLocalData()
+        localDataMessage = "工作台本地数据已清除；Codex 会话将重新同步。"
+      }
       Button("取消", role: .cancel) {}
     } message: {
       Text("不会删除 Codex 任务或项目文件。")
@@ -128,6 +196,17 @@ struct SettingsView: View {
     .frame(maxWidth: .infinity, alignment: .leading)
     .background(CMColor.porcelain, in: RoundedRectangle(cornerRadius: 9))
     .overlay(RoundedRectangle(cornerRadius: 9).stroke(CMColor.hairline, lineWidth: 0.7))
+  }
+
+  @ViewBuilder
+  private func sectionMessage(_ message: String?, isError: Bool) -> some View {
+    if let message {
+      Label(message, systemImage: isError ? "exclamationmark.triangle" : "checkmark.circle")
+        .font(CMFont.caption)
+        .foregroundStyle(isError ? CMColor.raiseRed : CMColor.reportGreen)
+        .fixedSize(horizontal: false, vertical: true)
+        .accessibilityLabel(isError ? "错误：\(message)" : message)
+    }
   }
 
   private func chooseCodex() {

@@ -21,16 +21,42 @@ enum CMMotion {
 }
 
 enum CMFont {
+  static let largeTitle = Font.largeTitle.weight(.bold)
+  static let title = Font.title2.weight(.bold)
+  static let headline = Font.headline
+  static let bodyText = Font.body
+  static let callout = Font.callout
+  static let caption = Font.caption
+  static let caption2 = Font.caption2
+
   static func display(_ size: CGFloat, weight: Font.Weight = .semibold) -> Font {
-    .system(size: size, weight: weight, design: .rounded)
+    semanticFont(for: size, weight: weight, design: .rounded)
   }
 
   static func body(_ size: CGFloat = 13, weight: Font.Weight = .regular) -> Font {
-    .system(size: size, weight: weight, design: .default)
+    semanticFont(for: size, weight: weight, design: .default)
   }
 
   static func mono(_ size: CGFloat = 11, weight: Font.Weight = .regular) -> Font {
-    .system(size: size, weight: weight, design: .monospaced).monospacedDigit()
+    semanticFont(for: size, weight: weight, design: .monospaced).monospacedDigit()
+  }
+
+  private static func semanticFont(
+    for size: CGFloat,
+    weight: Font.Weight,
+    design: Font.Design
+  ) -> Font {
+    let style: Font.TextStyle =
+      switch size {
+      case 24...: .title
+      case 18..<24: .title2
+      case 15..<18: .headline
+      case 13..<15: .body
+      case 11..<13: .callout
+      case 10..<11: .caption
+      default: .caption2
+      }
+    return .system(style, design: design, weight: weight)
   }
 }
 
@@ -140,7 +166,6 @@ struct ConnectionBadge: View {
 /// focus and disabled states are transient and never change the view's layout.
 struct CMTaskCardButtonStyle: ButtonStyle {
   @Environment(\.isEnabled) private var isEnabled
-  @Environment(\.isFocused) private var isFocused
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @Environment(\.colorSchemeContrast) private var contrast
 
@@ -151,10 +176,32 @@ struct CMTaskCardButtonStyle: ButtonStyle {
       configuration: configuration,
       selected: selected,
       isEnabled: isEnabled,
-      isFocused: isFocused,
       reduceMotion: reduceMotion,
       increasedContrast: contrast == .increased
     )
+  }
+}
+
+/// Plain custom controls keep AppKit's keyboard focus ring visible. Use this for
+/// buttons whose visual surface is drawn by their container.
+struct CMKeyboardFocusableModifier: ViewModifier {
+  @FocusState private var focused: Bool
+
+  func body(content: Content) -> some View {
+    content
+      .focusable()
+      .focused($focused)
+      .overlay(
+        RoundedRectangle(cornerRadius: 8)
+          .strokeBorder(CMColor.focusRing, lineWidth: focused ? 2 : 0)
+          .padding(1)
+      )
+  }
+}
+
+extension View {
+  func cmKeyboardFocusable() -> some View {
+    modifier(CMKeyboardFocusableModifier())
   }
 }
 
@@ -162,7 +209,6 @@ private struct CMTaskCardButtonStyleBody: View {
   let configuration: ButtonStyleConfiguration
   let selected: Bool
   let isEnabled: Bool
-  let isFocused: Bool
   let reduceMotion: Bool
   let increasedContrast: Bool
 
@@ -172,20 +218,6 @@ private struct CMTaskCardButtonStyleBody: View {
     configuration.label
       .foregroundStyle(CMColor.ink)
       .background(backgroundColor)
-      .overlay(
-        RoundedRectangle(cornerRadius: 8)
-          .strokeBorder(borderColor, lineWidth: borderWidth)
-      )
-      .overlay(
-        RoundedRectangle(cornerRadius: 10)
-          .strokeBorder(CMColor.focusRing, lineWidth: isFocused ? 2 : 0)
-          .padding(2)
-      )
-      .shadow(
-        color: CMColor.ink.opacity(shadowOpacity),
-        radius: configuration.isPressed ? 2 : isHovered ? 10 : 6,
-        y: configuration.isPressed ? 1 : isHovered ? 5 : 3
-      )
       .offset(y: configuration.isPressed && !reduceMotion ? 1 : 0)
       .opacity(isEnabled ? 1 : 0.46)
       .contentShape(RoundedRectangle(cornerRadius: 8))
@@ -200,27 +232,6 @@ private struct CMTaskCardButtonStyleBody: View {
     if isHovered { return CMColor.ink.opacity(increasedContrast ? 0.075 : 0.035) }
     if selected { return CMColor.ink.opacity(increasedContrast ? 0.055 : 0.025) }
     return .clear
-  }
-
-  private var borderColor: Color {
-    if isFocused { return CMColor.focusRing }
-    if selected { return CMColor.ink }
-    if isHovered || configuration.isPressed {
-      return CMColor.ink.opacity(increasedContrast ? 0.8 : 0.42)
-    }
-    return .clear
-  }
-
-  private var borderWidth: CGFloat {
-    if isFocused || selected { return increasedContrast ? 2 : 1.5 }
-    return increasedContrast ? 1.5 : 1
-  }
-
-  private var shadowOpacity: Double {
-    guard isEnabled else { return 0 }
-    if configuration.isPressed { return 0.07 }
-    if isHovered { return increasedContrast ? 0.2 : 0.13 }
-    return selected ? 0.09 : 0.04
   }
 
   private var animation: Animation? {
@@ -238,7 +249,6 @@ private struct CMTaskCardButtonStyleBody: View {
 /// stronger than hover so moving the pointer never obscures the current project.
 struct CMRowButtonStyle: ButtonStyle {
   @Environment(\.isEnabled) private var isEnabled
-  @Environment(\.isFocused) private var isFocused
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @Environment(\.colorSchemeContrast) private var contrast
 
@@ -249,7 +259,6 @@ struct CMRowButtonStyle: ButtonStyle {
       configuration: configuration,
       selected: selected,
       isEnabled: isEnabled,
-      isFocused: isFocused,
       reduceMotion: reduceMotion,
       increasedContrast: contrast == .increased
     )
@@ -260,7 +269,6 @@ private struct CMRowButtonStyleBody: View {
   let configuration: ButtonStyleConfiguration
   let selected: Bool
   let isEnabled: Bool
-  let isFocused: Bool
   let reduceMotion: Bool
   let increasedContrast: Bool
 
@@ -281,11 +289,6 @@ private struct CMRowButtonStyleBody: View {
         RoundedRectangle(cornerRadius: 7)
           .strokeBorder(borderColor, lineWidth: borderWidth)
       )
-      .overlay(
-        RoundedRectangle(cornerRadius: 9)
-          .strokeBorder(CMColor.focusRing, lineWidth: isFocused ? 2 : 0)
-          .padding(2)
-      )
       .offset(y: configuration.isPressed && !reduceMotion ? 1 : 0)
       .opacity(isEnabled ? 1 : 0.46)
       .contentShape(RoundedRectangle(cornerRadius: 7))
@@ -303,7 +306,6 @@ private struct CMRowButtonStyleBody: View {
   }
 
   private var borderColor: Color {
-    if isFocused { return CMColor.focusRing }
     if selected { return CMColor.ink.opacity(increasedContrast ? 0.7 : 0.22) }
     if isHovered || configuration.isPressed {
       return CMColor.ink.opacity(increasedContrast ? 0.65 : 0.2)
@@ -312,7 +314,7 @@ private struct CMRowButtonStyleBody: View {
   }
 
   private var borderWidth: CGFloat {
-    isFocused || increasedContrast ? 1.5 : 0.75
+    increasedContrast ? 1.5 : 0.75
   }
 
   private var animation: Animation? {
@@ -329,7 +331,6 @@ private struct CMRowButtonStyleBody: View {
 /// Compact command rows used by the menu bar panel.
 struct CMMenuRowButtonStyle: ButtonStyle {
   @Environment(\.isEnabled) private var isEnabled
-  @Environment(\.isFocused) private var isFocused
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @Environment(\.colorSchemeContrast) private var contrast
 
@@ -337,7 +338,6 @@ struct CMMenuRowButtonStyle: ButtonStyle {
     CMMenuRowButtonStyleBody(
       configuration: configuration,
       isEnabled: isEnabled,
-      isFocused: isFocused,
       reduceMotion: reduceMotion,
       increasedContrast: contrast == .increased
     )
@@ -347,7 +347,6 @@ struct CMMenuRowButtonStyle: ButtonStyle {
 private struct CMMenuRowButtonStyleBody: View {
   let configuration: ButtonStyleConfiguration
   let isEnabled: Bool
-  let isFocused: Bool
   let reduceMotion: Bool
   let increasedContrast: Bool
 
@@ -358,7 +357,7 @@ private struct CMMenuRowButtonStyleBody: View {
       .background(backgroundColor, in: RoundedRectangle(cornerRadius: 7))
       .overlay(
         RoundedRectangle(cornerRadius: 7)
-          .strokeBorder(borderColor, lineWidth: isFocused || increasedContrast ? 1.5 : 0.75)
+          .strokeBorder(borderColor, lineWidth: increasedContrast ? 1.5 : 0.75)
       )
       .offset(y: configuration.isPressed && !reduceMotion ? 1 : 0)
       .opacity(isEnabled ? 1 : 0.46)
@@ -375,7 +374,6 @@ private struct CMMenuRowButtonStyleBody: View {
   }
 
   private var borderColor: Color {
-    if isFocused { return CMColor.focusRing }
     if isHovered || configuration.isPressed {
       return CMColor.ink.opacity(increasedContrast ? 0.65 : 0.18)
     }
@@ -393,7 +391,6 @@ private struct CMMenuRowButtonStyleBody: View {
 /// hover/press surface instead of relying on a glyph color change alone.
 struct CMIconButtonStyle: ButtonStyle {
   @Environment(\.isEnabled) private var isEnabled
-  @Environment(\.isFocused) private var isFocused
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @Environment(\.colorSchemeContrast) private var contrast
 
@@ -404,7 +401,6 @@ struct CMIconButtonStyle: ButtonStyle {
     CMIconButtonStyleBody(
       configuration: configuration,
       isEnabled: isEnabled,
-      isFocused: isFocused,
       reduceMotion: reduceMotion,
       increasedContrast: contrast == .increased,
       tint: destructive ? CMColor.raiseRed : tint
@@ -415,7 +411,6 @@ struct CMIconButtonStyle: ButtonStyle {
 private struct CMIconButtonStyleBody: View {
   let configuration: ButtonStyleConfiguration
   let isEnabled: Bool
-  let isFocused: Bool
   let reduceMotion: Bool
   let increasedContrast: Bool
   let tint: Color
@@ -429,7 +424,7 @@ private struct CMIconButtonStyleBody: View {
       .background(backgroundColor, in: RoundedRectangle(cornerRadius: 6))
       .overlay(
         RoundedRectangle(cornerRadius: 6)
-          .strokeBorder(borderColor, lineWidth: isFocused || increasedContrast ? 1.5 : 0.75)
+          .strokeBorder(borderColor, lineWidth: increasedContrast ? 1.5 : 0.75)
       )
       .shadow(
         color: CMColor.ink.opacity(isHovered && isEnabled ? 0.09 : 0),
@@ -450,7 +445,6 @@ private struct CMIconButtonStyleBody: View {
   }
 
   private var borderColor: Color {
-    if isFocused { return CMColor.focusRing }
     if isHovered || configuration.isPressed { return tint.opacity(increasedContrast ? 0.8 : 0.28) }
     return .clear
   }

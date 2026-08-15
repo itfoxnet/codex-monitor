@@ -56,7 +56,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     alert.alertStyle = .warning
     alert.addButton(withTitle: "返回工作台")
     alert.addButton(withTitle: "中断并退出")
-    guard alert.runModal() == .alertSecondButtonReturn else { return .terminateCancel }
+    guard alert.runModal() == .alertSecondButtonReturn else {
+      coordinator?.showMainWindow()
+      return .terminateCancel
+    }
 
     guard termination.begin() else { return .terminateLater }
     beginTermination(sender: sender, model: model, interruptsActiveTasks: true)
@@ -120,12 +123,22 @@ extension AppDelegate: UNUserNotificationCenterDelegate {
     _ center: UNUserNotificationCenter,
     didReceive response: UNNotificationResponse
   ) async {
-    let threadID = response.notification.request.content.userInfo["threadID"] as? String
+    let request = response.notification.request
+    let route = NotificationRoute(
+      userInfo: request.content.userInfo,
+      identifier: request.identifier
+    )
     await MainActor.run { [weak self] in
       self?.coordinator?.showMainWindow()
-      guard let threadID else { return }
-      Task { @MainActor [weak self] in
-        await self?.model?.revealTask(threadID: threadID)
+      switch route {
+      case .task(let threadID):
+        Task { @MainActor [weak self] in
+          await self?.model?.revealTask(threadID: threadID)
+        }
+      case .completedCollection:
+        self?.model?.revealCompletedCollection()
+      case nil:
+        break
       }
     }
   }

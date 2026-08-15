@@ -75,6 +75,7 @@ struct MenuBarPanel: View {
               .padding(.vertical, 9)
             }
             .buttonStyle(CMMenuRowButtonStyle())
+            .cmKeyboardFocusable()
             .accessibilityLabel(
               "\(StaffIdentity.name(for: task.id))，\(model.preferences.displayProjectName(for: task))，\(task.displayStatus.title)"
             )
@@ -82,7 +83,9 @@ struct MenuBarPanel: View {
           }
           if model.attentionTasks.count > 5 {
             Button {
+              model.selectProject(id: nil)
               model.filter = .attention
+              model.searchText = ""
               openMainWindow()
             } label: {
               HStack {
@@ -100,6 +103,7 @@ struct MenuBarPanel: View {
               .contentShape(Rectangle())
             }
             .buttonStyle(CMMenuRowButtonStyle())
+            .cmKeyboardFocusable()
             .accessibilityLabel("另有 \(model.attentionTasks.count - 5) 项需要处理，查看全部")
           }
         }
@@ -122,6 +126,7 @@ struct MenuBarPanel: View {
           Image(systemName: "power")
         }
         .buttonStyle(CMIconButtonStyle(destructive: true))
+        .cmKeyboardFocusable()
         .help("退出 Codex Monitor")
         .accessibilityLabel("退出 Codex Monitor")
 
@@ -131,6 +136,7 @@ struct MenuBarPanel: View {
           Image(systemName: "slider.horizontal.3")
         }
         .buttonStyle(CMIconButtonStyle(tint: CMColor.muted))
+        .cmKeyboardFocusable()
         .help("设置")
         .accessibilityLabel("打开设置")
       }
@@ -156,8 +162,8 @@ struct MenuBarPanel: View {
   }
 
   private func open(_ task: TaskRecord) {
-    model.selectTask(task)
     openMainWindow()
+    Task { await model.revealTask(threadID: task.id) }
   }
 
   private func openMainWindow() {

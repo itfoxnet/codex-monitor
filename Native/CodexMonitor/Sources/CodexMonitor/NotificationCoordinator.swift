@@ -28,7 +28,7 @@ actor NotificationCoordinator {
         "\(task.id)-\(task.displayStatus.rawValue)-\(Int(task.updatedAt.timeIntervalSince1970))",
       title: privacyMode ? "Codex Monitor 有一项新动态" : title,
       body: privacyMode ? "打开工作台查看详情" : body,
-      threadID: task.id
+      route: .task(threadID: task.id)
     )
   }
 
@@ -70,7 +70,7 @@ actor NotificationCoordinator {
         identifier: "\(task.id)-completion-\(Int(task.updatedAt.timeIntervalSince1970))",
         title: privacyMode ? "Codex Monitor 有一项任务完成" : "\(StaffIdentity.name(for: task.id)) 完成汇报",
         body: privacyMode ? "打开工作台查看详情" : task.projectName,
-        threadID: task.id
+        route: .task(threadID: task.id)
       )
       return
     }
@@ -81,16 +81,21 @@ actor NotificationCoordinator {
       identifier: "completion-batch-\(Int(Date.now.timeIntervalSince1970))",
       title: isPrivate ? "Codex Monitor 有 \(tasks.count) 项任务完成" : "\(tasks.count) 位职员完成汇报",
       body: isPrivate ? "打开工作台查看详情" : projects,
-      threadID: tasks.first?.id
+      route: .completedCollection
     )
   }
 
-  private func deliver(identifier: String, title: String, body: String, threadID: String?) async {
+  private func deliver(
+    identifier: String,
+    title: String,
+    body: String,
+    route: NotificationRoute
+  ) async {
     let content = UNMutableNotificationContent()
     content.title = title
     content.body = body
     content.sound = .default
-    if let threadID { content.userInfo = ["threadID": threadID] }
+    content.userInfo = route.userInfo
     let request = UNNotificationRequest(
       identifier: identifier,
       content: content,

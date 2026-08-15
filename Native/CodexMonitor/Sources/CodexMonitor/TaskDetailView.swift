@@ -3,6 +3,8 @@ import SwiftUI
 
 struct TaskDetailView: View {
   @Environment(AppModel.self) private var model
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @State private var taskPendingInterruption: TaskRecord?
 
   var body: some View {
     Group {
@@ -38,6 +40,25 @@ struct TaskDetailView: View {
       } else {
         ContentUnavailableView("选择一名职员", systemImage: "person.crop.rectangle")
       }
+    }
+    .confirmationDialog(
+      "中断当前办理？",
+      isPresented: Binding(
+        get: { taskPendingInterruption != nil },
+        set: { if !$0 { taskPendingInterruption = nil } }
+      ),
+      titleVisibility: .visible
+    ) {
+      Button("中断办理", role: .destructive) {
+        guard let task = taskPendingInterruption else { return }
+        taskPendingInterruption = nil
+        Task {
+          _ = await model.interrupt(task)
+        }
+      }
+      Button("继续办理", role: .cancel) { taskPendingInterruption = nil }
+    } message: {
+      Text("职员会停止当前这一轮工作；已经写入的文件不会自动撤销。")
     }
   }
 
@@ -120,7 +141,7 @@ struct TaskDetailView: View {
 
     if task.displayStatus == .completedUnseen {
       Button {
-        withAnimation(.snappy) { model.markCompletedSeen(task) }
+        withAnimation(reduceMotion ? nil : .snappy) { model.markCompletedSeen(task) }
       } label: {
         Label("确认已阅", systemImage: "checkmark.circle")
       }
@@ -129,11 +150,19 @@ struct TaskDetailView: View {
     }
     if task.displayStatus == .running, task.activeTurnID != nil {
       Button(role: .destructive) {
-        Task { await model.interrupt(task) }
+        taskPendingInterruption = task
       } label: {
-        Label("中断当前办理", systemImage: "stop.circle")
+        if model.isInterrupting(task) {
+          HStack(spacing: 7) {
+            ProgressView().controlSize(.small)
+            Text("正在中断…")
+          }
+        } else {
+          Label("中断当前办理", systemImage: "stop.circle")
+        }
       }
       .buttonStyle(.bordered)
+      .disabled(model.isInterrupting(task))
     }
   }
 
@@ -154,31 +183,56 @@ struct TaskDetailView: View {
     .overlay(RoundedRectangle(cornerRadius: 9).stroke(CMColor.hairline, lineWidth: 0.7))
   }
 
+  @ViewBuilder
   private func detailRow(_ label: String, value: String) -> some View {
     GridRow(alignment: .firstTextBaseline) {
-      Text(label)
-        .foregroundStyle(CMColor.muted)
-        .frame(width: 70, alignment: .leading)
-      Text(value)
-        .foregroundStyle(CMColor.ink)
-        .textSelection(.enabled)
-        .fixedSize(horizontal: false, vertical: true)
-        .layoutPriority(1)
+      ViewThatFits(in: .horizontal) {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+          Text(label)
+            .foregroundStyle(CMColor.muted)
+            .frame(width: 70, alignment: .leading)
+          detailValue(value, wraps: false)
+        }
+        VStack(alignment: .leading, spacing: 5) {
+          Text(label)
+            .foregroundStyle(CMColor.muted)
+          detailValue(value, wraps: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+      }
+      .gridCellColumns(2)
     }
     .font(CMFont.mono(10))
     .accessibilityElement(children: .combine)
     .accessibilityLabel("\(label)，\(value)")
+  }
+
+  private func detailValue(_ value: String, wraps: Bool) -> some View {
+    Text(value)
+      .foregroundStyle(CMColor.ink)
+      .textSelection(.enabled)
+      .lineLimit(nil)
+      .fixedSize(horizontal: !wraps, vertical: true)
+      .frame(maxWidth: .infinity, alignment: .leading)
   }
 }
 
 private struct ApprovalPanel: View {
   @Environment(AppModel.self) private var model
   let request: AttentionRequest
-  @State private var revealSensitive = false
+  @State private var revealSensitive: Bool
+  @State private var pendingDestructiveDecision: ApprovalDecision?
+
+  init(request: AttentionRequest) {
+    self.request = request
+    _revealSensitive = State(initialValue: false)
+  }
 
   private var mustRevealBeforeApproval: Bool {
     model.preferences.privacyMode && !revealSensitive
   }
+
+  private var isSubmitting: Bool { model.isSubmitting(request) }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
@@ -187,8 +241,13 @@ private struct ApprovalPanel: View {
           .font(CMFont.body(13, weight: .bold))
           .foregroundStyle(CMColor.raiseRed)
         Spacer()
-        Text(request.state == .responding ? "正在提交" : "等待处理")
-          .font(CMFont.mono(9))
+        if isSubmitting {
+          ProgressView()
+            .controlSize(.small)
+            .accessibilityLabel("正在提交这项请示")
+        }
+        Text(isSubmitting ? "正在提交" : "等待处理")
+          .font(CMFont.caption2)
           .foregroundStyle(CMColor.muted)
       }
 
@@ -197,6 +256,14 @@ private struct ApprovalPanel: View {
           .font(CMFont.body(12))
           .foregroundStyle(CMColor.ink)
           .fixedSize(horizontal: false, vertical: true)
+      }
+
+      if let error = model.requestError(for: request) {
+        Label(error, systemImage: "exclamationmark.triangle.fill")
+          .font(CMFont.caption)
+          .foregroundStyle(CMColor.raiseRed)
+          .fixedSize(horizontal: false, vertical: true)
+          .accessibilityLabel("提交错误：\(error)")
       }
 
       if request.kind == .userInput {
@@ -251,7 +318,7 @@ private struct ApprovalPanel: View {
           }
           .buttonStyle(.borderedProminent)
           .tint(CMColor.reportGreen)
-          .disabled(mustRevealBeforeApproval || request.state != .open)
+          .disabled(mustRevealBeforeApproval || request.state != .open || isSubmitting)
 
           Button("拒绝") {
             Task { await model.decide(request, decision: .decline) }
@@ -260,18 +327,41 @@ private struct ApprovalPanel: View {
 
           if request.kind == .commandApproval || request.kind == .fileApproval {
             Button("取消任务", role: .destructive) {
-              Task { await model.decide(request, decision: .cancel) }
+              pendingDestructiveDecision = .cancel
             }
             .buttonStyle(.bordered)
             .tint(CMColor.raiseRed)
           }
         }
-        .disabled(request.state != .open)
+        .disabled(request.state != .open || isSubmitting)
       }
     }
     .padding(14)
     .background(CMColor.raiseRed.opacity(0.055), in: RoundedRectangle(cornerRadius: 9))
     .overlay(RoundedRectangle(cornerRadius: 9).stroke(CMColor.raiseRed.opacity(0.35), lineWidth: 1))
+    .onAppear { revealSensitive = !model.preferences.privacyMode }
+    .onChange(of: model.preferences.privacyMode) { _, isPrivate in
+      revealSensitive = !isPrivate
+    }
+    .onChange(of: request.id) { _, _ in
+      revealSensitive = !model.preferences.privacyMode
+    }
+    .confirmationDialog(
+      "取消这名职员的任务？",
+      isPresented: Binding(
+        get: { pendingDestructiveDecision != nil },
+        set: { if !$0 { pendingDestructiveDecision = nil } }
+      ),
+      titleVisibility: .visible
+    ) {
+      Button("取消任务", role: .destructive) {
+        pendingDestructiveDecision = nil
+        Task { await model.decide(request, decision: .cancel) }
+      }
+      Button("保留任务", role: .cancel) { pendingDestructiveDecision = nil }
+    } message: {
+      Text("当前办理将被取消；已经写入的文件不会自动撤销。")
+    }
   }
 }
 
@@ -281,6 +371,7 @@ private struct UserInputApprovalView: View {
   @State private var answers: [String: String] = [:]
   @State private var selections: [String: String] = [:]
   private let otherSelection = "__codex_monitor_other__"
+  private var isSubmitting: Bool { model.isSubmitting(request) }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
@@ -327,7 +418,7 @@ private struct UserInputApprovalView: View {
         }
       }
 
-      Button("提交回答") {
+      Button {
         let mapped = Dictionary(
           uniqueKeysWithValues: request.questions.map { question in
             let selection = selections[question.id]
@@ -337,12 +428,22 @@ private struct UserInputApprovalView: View {
             return (question.id, [value])
           })
         Task { await model.answer(request, answers: mapped) }
+      } label: {
+        if isSubmitting {
+          HStack(spacing: 7) {
+            ProgressView().controlSize(.small)
+            Text("正在提交回答…")
+          }
+        } else {
+          Text("提交回答")
+        }
       }
       .buttonStyle(.borderedProminent)
       .tint(CMColor.reportGreen)
-      .disabled(request.state != .open || !hasCompleteAnswers)
-      .accessibilityValue(request.state == .responding ? "正在提交" : "")
+      .disabled(request.state != .open || !hasCompleteAnswers || isSubmitting)
+      .accessibilityValue(isSubmitting ? "正在提交" : "")
     }
+    .disabled(isSubmitting)
   }
 
   @ViewBuilder
@@ -382,6 +483,8 @@ private struct TakeOverPanel: View {
   let task: TaskRecord
   @State private var prompt: String
   @FocusState private var focusTarget: FocusTarget?
+  @State private var submissionError: String?
+  @State private var editorHovered = false
 
   init(task: TaskRecord) {
     self.task = task
@@ -401,21 +504,48 @@ private struct TakeOverPanel: View {
         .frame(minHeight: 90)
         .padding(6)
         .background(CMColor.porcelain, in: RoundedRectangle(cornerRadius: 6))
-        .overlay(RoundedRectangle(cornerRadius: 6).stroke(CMColor.hairline, lineWidth: 0.7))
+        .overlay(
+          RoundedRectangle(cornerRadius: 6)
+            .stroke(
+              submissionError == nil
+                ? focusTarget == .prompt
+                  ? CMColor.focusRing : editorHovered ? CMColor.ink.opacity(0.42) : CMColor.hairline
+                : CMColor.raiseRed,
+              lineWidth: focusTarget == .prompt || submissionError != nil ? 1.5 : 0.7
+            )
+        )
         .accessibilityLabel("接管任务说明")
         .focused($focusTarget, equals: .prompt)
+        .disabled(model.isTakingOver(task))
+        .opacity(model.isTakingOver(task) ? 0.55 : 1)
+        .onHover { editorHovered = model.isTakingOver(task) ? false : $0 }
+        .onChange(of: model.isTakingOver(task)) { _, takingOver in
+          if takingOver { editorHovered = false }
+        }
         .onKeyPress(.tab) {
           focusTarget = .submit
           return .handled
         }
-      Button("接管并继续") {
-        Task { _ = await model.takeOver(task, prompt: prompt) }
+      if let submissionError {
+        Text(submissionError)
+          .font(CMFont.caption)
+          .foregroundStyle(CMColor.raiseRed)
+          .fixedSize(horizontal: false, vertical: true)
+          .accessibilityLabel("错误：\(submissionError)")
+      }
+      Button(model.isTakingOver(task) ? "正在接管…" : "接管并继续") {
+        submissionError = nil
+        Task {
+          if !(await model.takeOver(task, prompt: prompt)) {
+            submissionError = model.bannerMessage ?? "未能接管任务，请稍后重试。"
+          }
+        }
       }
       .buttonStyle(.borderedProminent)
       .tint(CMColor.ink)
       .focused($focusTarget, equals: .submit)
       .disabled(
-        model.isBusy || !model.canManageTasks
+        model.isTakingOver(task) || !model.canManageTasks
           || prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
     }
     .padding(14)
@@ -424,6 +554,7 @@ private struct TakeOverPanel: View {
       RoundedRectangle(cornerRadius: 9).stroke(CMColor.workOrange.opacity(0.3), lineWidth: 1)
     )
     .id(task.id)
+    .onChange(of: prompt) { _, _ in submissionError = nil }
   }
 }
 

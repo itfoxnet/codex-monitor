@@ -3,12 +3,17 @@ import SwiftUI
 
 struct ProjectSidebar: View {
   @Environment(AppModel.self) private var model
+  @FocusState private var projectSearchFocused: Bool
+  @State private var searchHovered = false
 
   var body: some View {
+    let visibleProjects = model.filteredProjects
     VStack(spacing: 0) {
       brandHeader
+      projectUtilities
+      Rectangle().fill(CMColor.hairline).frame(height: 0.5)
       ScrollView {
-        LazyVStack(spacing: 8) {
+        LazyVStack(spacing: 3) {
           projectButton(
             id: nil,
             name: "全部项目",
@@ -17,18 +22,30 @@ struct ProjectSidebar: View {
             attention: model.managerAttentionCount,
             history: model.historyCount
           )
-          ForEach(model.board.projects) { project in
+          ForEach(visibleProjects) { project in
             projectButton(
               id: project.id,
               name: project.name,
               count: project.tasks.count,
               running: project.runningCount,
               attention: project.attentionCount,
-              history: project.tasks.count { $0.displayStatus == .historyOnly }
+              history: project.historyCount
             )
           }
+
+          if visibleProjects.isEmpty {
+            emptyProjects
+          }
         }
-        .padding(12)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 8)
+      }
+      .onHover { hovering in
+        if hovering {
+          model.beginProjectListInteraction()
+        } else {
+          model.endProjectListInteraction()
+        }
       }
 
       VStack(alignment: .leading, spacing: 6) {
@@ -44,6 +61,103 @@ struct ProjectSidebar: View {
       .overlay(alignment: .top) { Rectangle().fill(CMColor.hairline).frame(height: 0.5) }
     }
     .background(CMColor.warmPaper)
+  }
+
+  private var projectUtilities: some View {
+    @Bindable var model = model
+    @Bindable var preferences = model.preferences
+    return VStack(alignment: .leading, spacing: 7) {
+      HStack(spacing: 6) {
+        Image(systemName: "magnifyingglass")
+          .foregroundStyle(CMColor.muted)
+          .accessibilityHidden(true)
+        TextField(
+          preferences.privacyMode ? "搜索匿名项目编号" : "搜索项目或路径",
+          text: $model.projectSearchText
+        )
+        .textFieldStyle(.plain)
+        .focused($projectSearchFocused)
+        .onSubmit { model.updateProjectQuery() }
+        .accessibilityLabel("搜索项目")
+        if !model.projectSearchText.isEmpty {
+          Button("清除") {
+            model.projectSearchText = ""
+            model.updateProjectQuery()
+          }
+          .controlSize(.mini)
+          .buttonStyle(.bordered)
+        }
+      }
+      .padding(.horizontal, 8)
+      .frame(height: 30)
+      .background(CMColor.porcelain.opacity(0.84), in: RoundedRectangle(cornerRadius: 6))
+      .overlay(
+        RoundedRectangle(cornerRadius: 6)
+          .strokeBorder(
+            projectSearchFocused
+              ? CMColor.focusRing : CMColor.ink.opacity(searchHovered ? 0.35 : 0.16),
+            lineWidth: projectSearchFocused ? 1.5 : 0.75
+          )
+      )
+      .onHover { searchHovered = $0 }
+      .onChange(of: model.projectSearchText) { _, _ in model.updateProjectQuery() }
+
+      VStack(alignment: .leading, spacing: 7) {
+        LabeledContent("显示范围") {
+          Picker("显示范围", selection: $model.projectFilter) {
+            ForEach(ProjectListFilter.allCases) { filter in
+              Text(filter.title).tag(filter)
+            }
+          }
+          .labelsHidden()
+          .pickerStyle(.menu)
+          .controlSize(.small)
+          .frame(maxWidth: .infinity, alignment: .trailing)
+          .onChange(of: model.projectFilter) { _, _ in model.updateProjectQuery() }
+          .accessibilityLabel("项目显示范围")
+        }
+
+        LabeledContent("排列方式") {
+          Picker("排列方式", selection: $preferences.projectSort) {
+            ForEach(ProjectSortOption.allCases) { option in
+              Text(
+                preferences.privacyMode && option == .name
+                  ? "匿名编号" : option.title
+              ).tag(option)
+            }
+          }
+          .labelsHidden()
+          .pickerStyle(.menu)
+          .controlSize(.small)
+          .frame(maxWidth: .infinity, alignment: .trailing)
+          .onChange(of: preferences.projectSort) { _, _ in model.updateProjectQuery() }
+          .accessibilityLabel("项目排列方式")
+        }
+      }
+      .font(CMFont.caption)
+
+      if model.hasActiveProjectQuery {
+        Text("找到 \(model.filteredProjects.count) 个项目")
+          .foregroundStyle(CMColor.ink)
+          .font(CMFont.mono(9))
+          .lineLimit(1)
+      }
+    }
+    .padding(.horizontal, 12)
+    .padding(.vertical, 10)
+  }
+
+  private var emptyProjects: some View {
+    VStack(spacing: 8) {
+      Text("没有符合条件的项目")
+        .font(CMFont.body(11, weight: .medium))
+        .foregroundStyle(CMColor.muted)
+      Button("清除筛选") { model.clearProjectQuery() }
+        .controlSize(.small)
+        .buttonStyle(.bordered)
+    }
+    .frame(maxWidth: .infinity)
+    .padding(.vertical, 20)
   }
 
   private var brandHeader: some View {
@@ -113,6 +227,11 @@ struct ProjectSidebar: View {
           Text(activitySummary)
             .font(CMFont.mono(9))
             .foregroundStyle(CMColor.muted)
+          if let id, model.projectIsOutsideCurrentQuery(id) {
+            Text("当前项目 · 不符合筛选")
+              .font(CMFont.caption2)
+              .foregroundStyle(CMColor.workOrange)
+          }
         }
         Spacer(minLength: 4)
         Text("\(count)")
@@ -120,12 +239,12 @@ struct ProjectSidebar: View {
           .foregroundStyle(CMColor.muted)
       }
       .foregroundStyle(CMColor.ink)
-      .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
+      .frame(maxWidth: .infinity, minHeight: 46, alignment: .leading)
       .contentShape(Rectangle())
-      .padding(.horizontal, 12)
-      .padding(.vertical, 10)
+      .padding(.horizontal, 10)
     }
     .buttonStyle(CMRowButtonStyle(selected: selected))
+    .cmKeyboardFocusable()
     .help(privacyMode ? sourceHint : "\(name)\n\(sourceHint)")
     .accessibilityLabel(
       "\(displayName)，\(sourceHint)，共 \(count) 个会话，\(running) 个办理中，\(attention) 个举手，\(history) 个历史档案"

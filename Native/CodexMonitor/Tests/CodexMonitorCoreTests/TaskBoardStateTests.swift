@@ -4,6 +4,21 @@ import Testing
 
 @testable import CodexMonitorCore
 
+@Test func taskDraftValidatesTheLocalProjectDirectoryBeforeSubmitting() throws {
+  let temporaryDirectory = FileManager.default.temporaryDirectory
+    .appendingPathComponent(UUID().uuidString, isDirectory: true)
+  try FileManager.default.createDirectory(
+    at: temporaryDirectory, withIntermediateDirectories: true)
+  defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
+
+  #expect(TaskDraft(cwd: "", prompt: "工作").localValidationMessage == "请选择项目目录。")
+  #expect(
+    TaskDraft(cwd: temporaryDirectory.appendingPathComponent("missing").path, prompt: "工作")
+      .localValidationMessage == "项目目录不存在或不是文件夹。")
+  #expect(TaskDraft(cwd: temporaryDirectory.path, prompt: "").localValidationMessage == "请填写任务目标。")
+  #expect(TaskDraft(cwd: temporaryDirectory.path, prompt: "工作").localValidationMessage == nil)
+}
+
 private let thread: JSONValue = [
   "id": "thr_019fd2f0",
   "sessionId": "thr_019fd2f0",
@@ -15,6 +30,116 @@ private let thread: JSONValue = [
   "createdAt": 1_754_400_000,
   "updatedAt": 1_754_400_010,
 ]
+
+@Test func notificationRoutesRoundTripSingleTasksAndAggregateCollections() {
+  let task = NotificationRoute.task(threadID: "thread-a")
+  let aggregate = NotificationRoute.completedCollection
+
+  #expect(NotificationRoute(userInfo: task.userInfo) == task)
+  #expect(NotificationRoute(userInfo: aggregate.userInfo) == aggregate)
+  #expect(aggregate.userInfo["threadID"] == nil)
+}
+
+@Test func notificationRouteReadsLegacyTaskPayloadWithoutMisroutingUnknownPayloads() {
+  #expect(
+    NotificationRoute(userInfo: ["threadID": "legacy-thread"])
+      == .task(threadID: "legacy-thread")
+  )
+  #expect(NotificationRoute(userInfo: ["route": "unknown", "threadID": "thread-a"]) == nil)
+  #expect(NotificationRoute(userInfo: [:]) == nil)
+}
+
+@Test func notificationRouteRecognizesLegacyAggregateIdentifierBeforeLegacyThreadID() {
+  #expect(
+    NotificationRoute(
+      userInfo: ["threadID": "first-thread"],
+      identifier: "completion-batch-1750000000"
+    ) == .completedCollection
+  )
+  #expect(
+    NotificationRoute(
+      userInfo: ["threadID": "legacy-thread"],
+      identifier: "legacy-thread-completion-1750000000"
+    ) == .task(threadID: "legacy-thread")
+  )
+  #expect(
+    NotificationRoute(
+      userInfo: ["route": "unknown", "threadID": "first-thread"],
+      identifier: "completion-batch-1750000000"
+    ) == nil
+  )
+}
+
+@Test func completedCollectionFilterIncludesOnlyUnreadCompletionReports() {
+  let unread = TaskRecord(
+    id: "unread",
+    sessionID: "unread",
+    projectID: "project",
+    cwd: "/Users/demo/Project",
+    title: "Unread",
+    ownership: .hostedLive,
+    displayStatus: .completedUnseen,
+    rawStatus: "completed"
+  )
+  var seen = unread
+  seen.displayStatus = .completedSeen
+  seen.title = "Seen"
+  seen.sessionID = "seen"
+  let running = TaskRecord(
+    id: "running",
+    sessionID: "running",
+    projectID: "project",
+    cwd: "/Users/demo/Project",
+    title: "Running",
+    ownership: .hostedLive,
+    displayStatus: .running,
+    rawStatus: "active"
+  )
+  let state = TaskBoardState(tasksByID: [unread.id: unread, "seen": seen, running.id: running])
+
+  #expect(
+    state.filteredTasks(
+      in: TaskQueryScope(projectID: nil, filter: .completedUnseen, query: "")
+    ).map(\.id) == ["unread"]
+  )
+}
+
+private func project(
+  id: String,
+  name: String? = nil,
+  cwd: String? = nil,
+  statuses: [TaskDisplayStatus],
+  ownership: TaskOwnership = .hostedLive,
+  updatedAt: TimeInterval = 1
+) -> ProjectRecord {
+  let resolvedCWD = cwd ?? "/Users/demo/\(id)"
+  let tasks = statuses.enumerated().map { index, status in
+    TaskRecord(
+      id: "\(id)-\(index)",
+      sessionID: "\(id)-\(index)",
+      projectID: id,
+      cwd: resolvedCWD,
+      title: "Task \(index)",
+      ownership: ownership,
+      displayStatus: status,
+      rawStatus: status.rawValue,
+      updatedAt: Date(timeIntervalSince1970: updatedAt)
+    )
+  }
+  return ProjectRecord(
+    id: id,
+    name: name ?? id,
+    cwd: resolvedCWD,
+    tasks: tasks
+  )
+}
+
+private func projectIDs(_ projects: [ProjectRecord], filter: ProjectListFilter) -> [String] {
+  ProjectProjectionPolicy.apply(
+    ProjectQueryScope(filter: filter, query: "", sort: .name),
+    to: projects
+  ).map(\.id)
+}
 
 @Test func codexThreadLinkAcceptsOnlyUUIDThreadIDs() {
   let threadID = "019fd20d-2d0a-7733-a3eb-99500c66f3bd"
@@ -596,6 +721,31 @@ private let thread: JSONValue = [
   #expect(AdaptiveTaskGridPolicy.columnCount(windowWidth: 1_600) == 4)
 }
 
+@Test func dashboardResponsivePoliciesUseContentWidthAtExactBoundaries() {
+  #expect(DashboardResponsivePolicy.metricsLayout(contentWidth: 719) == .compact)
+  #expect(DashboardResponsivePolicy.metricsLayout(contentWidth: 720) == .spacious)
+  #expect(DashboardResponsivePolicy.metricsLayout(contentWidth: 559) == .stacked)
+  #expect(DashboardResponsivePolicy.metricsLayout(contentWidth: 560) == .compact)
+
+  #expect(DashboardResponsivePolicy.filterLayout(contentWidth: 899) == .stackedSegmented)
+  #expect(DashboardResponsivePolicy.filterLayout(contentWidth: 900) == .inlineSegmented)
+  #expect(DashboardResponsivePolicy.filterLayout(contentWidth: 719) == .stackedMenu)
+  #expect(DashboardResponsivePolicy.filterLayout(contentWidth: 720) == .stackedSegmented)
+  #expect(DashboardResponsivePolicy.filterLayout(contentWidth: 640) == .stackedMenu)
+  #expect(DashboardResponsivePolicy.filterLayout(contentWidth: 800) == .stackedSegmented)
+  #expect(TaskFilter.completedUnseen.title == "未阅汇报")
+}
+
+@Test func dashboardMetricsDrawSeparatorsOnlyBetweenVisibleColumns() {
+  #expect(DashboardResponsivePolicy.showsMetricSeparator(at: 0, layout: .spacious))
+  #expect(DashboardResponsivePolicy.showsMetricSeparator(at: 2, layout: .compact))
+  #expect(!DashboardResponsivePolicy.showsMetricSeparator(at: 3, layout: .spacious))
+  #expect(DashboardResponsivePolicy.showsMetricSeparator(at: 0, layout: .stacked))
+  #expect(!DashboardResponsivePolicy.showsMetricSeparator(at: 1, layout: .stacked))
+  #expect(DashboardResponsivePolicy.showsMetricSeparator(at: 2, layout: .stacked))
+  #expect(!DashboardResponsivePolicy.showsMetricSeparator(at: 3, layout: .stacked))
+}
+
 @Test func privacyModeSearchDoesNotRevealSensitiveTaskMetadata() {
   let task = TaskRecord(
     id: "thread-safe-id",
@@ -678,6 +828,113 @@ private let thread: JSONValue = [
   #expect(!PrivacyPreferencePolicy.isEnabled(storedValue: nil))
   #expect(PrivacyPreferencePolicy.isEnabled(storedValue: true))
   #expect(!PrivacyPreferencePolicy.isEnabled(storedValue: false))
+}
+
+@Test func projectManagerPrioritySortsAttentionThenRunningThenRecentActivity() {
+  let attention = project(
+    id: "attention", name: "Zeta", statuses: [.needsApproval], updatedAt: 10)
+  let running = project(id: "running", name: "Beta", statuses: [.running], updatedAt: 30)
+  let recent = project(id: "recent", name: "Alpha", statuses: [.historyOnly], updatedAt: 40)
+  let old = project(id: "old", name: "Delta", statuses: [.historyOnly], updatedAt: 20)
+
+  let result = ProjectProjectionPolicy.apply(
+    ProjectQueryScope(filter: .all, query: "", sort: .managerPriority),
+    to: [old, recent, running, attention]
+  )
+
+  #expect(result.map(\.id) == ["attention", "running", "recent", "old"])
+}
+
+@Test func projectFiltersMatchOnlyTheirRequestedScope() {
+  let attention = project(id: "attention", statuses: [.needsInput])
+  let running = project(id: "running", statuses: [.running])
+  let history = project(id: "history", statuses: [.historyOnly], ownership: .historyOnly)
+  let projects = [attention, running, history]
+
+  #expect(projectIDs(projects, filter: .attention) == ["attention"])
+  #expect(projectIDs(projects, filter: .running) == ["running"])
+  #expect(projectIDs(projects, filter: .history) == ["history"])
+}
+
+@Test func projectSearchMatchesNameAndPathButPrivacySearchUsesOnlyAnonymousReference() {
+  let secret = project(
+    id: "/Users/demo/Customer-Secret",
+    name: "收购项目机密",
+    cwd: "/Users/demo/Customer-Secret",
+    statuses: [.running]
+  )
+
+  let visible = ProjectProjectionPolicy.apply(
+    ProjectQueryScope(filter: .all, query: "Customer-Secret", sort: .name), to: [secret]
+  )
+  let privateLeak = ProjectProjectionPolicy.apply(
+    ProjectQueryScope(
+      filter: .all, query: "Customer-Secret", sort: .name, hidesSensitiveContent: true),
+    to: [secret]
+  )
+  let reference = StaffIdentity.privateReference(for: secret.id)
+  let privateReference = ProjectProjectionPolicy.apply(
+    ProjectQueryScope(
+      filter: .all, query: reference, sort: .name, hidesSensitiveContent: true),
+    to: [secret]
+  )
+
+  #expect(visible.map(\.id) == [secret.id])
+  #expect(privateLeak.isEmpty)
+  #expect(privateReference.map(\.id) == [secret.id])
+}
+
+@Test func privacyProjectNameSortUsesAnonymousReferencesInsteadOfSecretNames() {
+  let alphaSecret = project(id: "project-z", name: "Alpha Secret", statuses: [.waiting])
+  let zetaSecret = project(id: "project-a", name: "Zeta Secret", statuses: [.waiting])
+  let scope = ProjectQueryScope(
+    filter: .all, query: "", sort: .name, hidesSensitiveContent: true)
+
+  let result = ProjectProjectionPolicy.apply(scope, to: [alphaSecret, zetaSecret])
+  let expected = [alphaSecret, zetaSecret].sorted {
+    StaffIdentity.privateReference(for: $0.id)
+      .localizedCaseInsensitiveCompare(StaffIdentity.privateReference(for: $1.id))
+      == .orderedAscending
+  }
+
+  #expect(result.map(\.id) == expected.map(\.id))
+}
+
+@Test func projectSortOptionsHaveStableDeterministicFallbacks() {
+  let few = project(id: "b", name: "Same", statuses: [.waiting], updatedAt: 1)
+  let many = project(id: "a", name: "Same", statuses: [.waiting, .historyOnly], updatedAt: 1)
+
+  let byCount = ProjectProjectionPolicy.apply(
+    ProjectQueryScope(filter: .all, query: "", sort: .sessionCount), to: [few, many]
+  )
+  let byName = ProjectProjectionPolicy.apply(
+    ProjectQueryScope(filter: .all, query: "", sort: .name), to: [few, many]
+  )
+
+  #expect(byCount.map(\.id) == ["a", "b"])
+  #expect(byName.map(\.id) == ["a", "b"])
+}
+
+@Test func interactingWithProjectListFreezesExistingRowsAndAppendsNewMatches() {
+  let alpha = project(id: "alpha", statuses: [.waiting])
+  let beta = project(id: "beta", statuses: [.running])
+  let raised = project(id: "raised", statuses: [.needsApproval])
+
+  let stable = StableProjectOrderPolicy.apply(
+    previousOrder: [alpha.id, beta.id], to: [raised, beta, alpha]
+  )
+  let filtered = StableProjectOrderPolicy.apply(
+    previousOrder: [alpha.id, beta.id], to: [beta]
+  )
+
+  #expect(stable.map(\.id) == ["alpha", "beta", "raised"])
+  #expect(filtered.map(\.id) == ["beta"])
+}
+
+@Test func projectSortPreferenceFallsBackSafelyAndRestoresKnownValues() {
+  #expect(ProjectSortPreferencePolicy.resolve(storedValue: nil) == .managerPriority)
+  #expect(ProjectSortPreferencePolicy.resolve(storedValue: "unsupported") == .managerPriority)
+  #expect(ProjectSortPreferencePolicy.resolve(storedValue: "recentActivity") == .recentActivity)
 }
 
 @Test func externalObservationDoesNotTrustStaleAppServerMetadata() {

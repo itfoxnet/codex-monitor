@@ -30,6 +30,10 @@ struct CodexMonitorApp: App {
           .keyboardShortcut("n", modifiers: [.command, .shift])
           .disabled(!model.canManageTasks)
       }
+      CommandGroup(replacing: .appSettings) {
+        Button("设置…") { coordinator.present(.settings) }
+          .keyboardShortcut(",", modifiers: [.command])
+      }
       CommandGroup(replacing: .appTermination) {
         Button("退出 Codex Monitor") { NSApplication.shared.terminate(nil) }
           .keyboardShortcut("q", modifiers: [.command])
@@ -53,6 +57,7 @@ struct CodexMonitorApp: App {
         Divider()
         Button("当前项目完成汇报全部已阅") { model.markCurrentProjectReportsSeen() }
           .keyboardShortcut("a", modifiers: [.command, .shift])
+          .disabled(model.scopedCompletedUnreadCount == 0)
       }
     }
 

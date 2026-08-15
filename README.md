@@ -2,6 +2,16 @@
 
 一个以项目为单位的轻量 Codex 任务监控产品。当前目录保留 Web 视觉原型；正式方向已经确定为 SwiftUI 原生 macOS 菜单栏应用。
 
+## 界面预览
+
+项目级任务雷达，集中查看办理中、需处理、未阅汇报与历史档案：
+
+![Codex Monitor 项目任务雷达](docs/images/codex-monitor-project-dashboard.png)
+
+多项目、多任务总览，支持按状态筛选、搜索与排序：
+
+![Codex Monitor 多任务总览](docs/images/codex-monitor-task-overview.png)
+
 ## 项目状态
 
 - 当前：SwiftUI 本地 Alpha 已实现并打包，采用“托管 App Server + 本机会话生命周期观察”的双通道状态方案。
